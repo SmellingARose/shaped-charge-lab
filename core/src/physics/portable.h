@@ -5,6 +5,7 @@
 #if defined(__METAL_VERSION__)
   #include <metal_stdlib>
   #define SCL_FN inline
+  #define SCL_HD inline
   #define SCL_DEV device
   #define SCL_CONST constant
   typedef uint u32;
@@ -28,6 +29,7 @@
     #include <hip/hip_runtime.h>
   #endif
   #define SCL_FN __device__ __forceinline__
+  #define SCL_HD __host__ __device__ __forceinline__
   #define SCL_DEV
   #define SCL_CONST
   typedef unsigned int u32;
@@ -52,6 +54,7 @@
   #include <cstdint>
   #include <cstring>
   #define SCL_FN inline
+  #define SCL_HD inline
   #define SCL_DEV
   #define SCL_CONST
   typedef uint32_t u32;
@@ -84,18 +87,18 @@ struct v3 { float x, y, z; };
 struct alignas(16) v4 { float x, y, z, w; };
 struct alignas(16) u4 { u32 x, y, z, w; };
 
-SCL_FN v3 mk3(float x, float y, float z) { v3 r; r.x = x; r.y = y; r.z = z; return r; }
-SCL_FN v4 mk4(float x, float y, float z, float w) { v4 r; r.x = x; r.y = y; r.z = z; r.w = w; return r; }
-SCL_FN v4 mk4(v3 a, float w) { return mk4(a.x, a.y, a.z, w); }
-SCL_FN v3 xyz(v4 a) { return mk3(a.x, a.y, a.z); }
-SCL_FN v3 operator+(v3 a, v3 b) { return mk3(a.x + b.x, a.y + b.y, a.z + b.z); }
-SCL_FN v3 operator-(v3 a, v3 b) { return mk3(a.x - b.x, a.y - b.y, a.z - b.z); }
-SCL_FN v3 operator*(v3 a, float s) { return mk3(a.x * s, a.y * s, a.z * s); }
-SCL_FN v3 operator*(float s, v3 a) { return mk3(a.x * s, a.y * s, a.z * s); }
-SCL_FN float dot3(v3 a, v3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
-SCL_FN float len3(v3 a) { return scl_sqrt(dot3(a, a)); }
-SCL_FN v3 norm3(v3 a) { float l = len3(a); return l > 0 ? a * (1.0f / l) : mk3(0, 0, 1); }
+SCL_HD v3 mk3(float x, float y, float z) { v3 r; r.x = x; r.y = y; r.z = z; return r; }
+SCL_HD v4 mk4(float x, float y, float z, float w) { v4 r; r.x = x; r.y = y; r.z = z; r.w = w; return r; }
+SCL_HD v4 mk4(v3 a, float w) { return mk4(a.x, a.y, a.z, w); }
+SCL_HD v3 xyz(v4 a) { return mk3(a.x, a.y, a.z); }
+SCL_HD v3 operator+(v3 a, v3 b) { return mk3(a.x + b.x, a.y + b.y, a.z + b.z); }
+SCL_HD v3 operator-(v3 a, v3 b) { return mk3(a.x - b.x, a.y - b.y, a.z - b.z); }
+SCL_HD v3 operator*(v3 a, float s) { return mk3(a.x * s, a.y * s, a.z * s); }
+SCL_HD v3 operator*(float s, v3 a) { return mk3(a.x * s, a.y * s, a.z * s); }
+SCL_HD float dot3(v3 a, v3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+SCL_HD float len3(v3 a) { return scl_sqrt(dot3(a, a)); }
+SCL_HD v3 norm3(v3 a) { float l = len3(a); return l > 0 ? a * (1.0f / l) : mk3(0, 0, 1); }
 
 // symmetric / general 3×3 as three rows
 struct m3 { v3 r0, r1, r2; };
-SCL_FN v3 mulv(m3 m, v3 v) { return mk3(dot3(m.r0, v), dot3(m.r1, v), dot3(m.r2, v)); }
+SCL_HD v3 mulv(m3 m, v3 v) { return mk3(dot3(m.r0, v), dot3(m.r1, v), dot3(m.r2, v)); }
