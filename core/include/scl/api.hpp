@@ -113,6 +113,7 @@ struct Stats {
     double stepsPerSecond = 0;
     int particles = 0, activeParticles = 0;
     bool done = false;
+    bool refinementExhausted = false;   // ran out of split slots; results are under-refined
 };
 
 /// Measured jet as an ideal stretching rod (virtual origin z_vo, t_vo).

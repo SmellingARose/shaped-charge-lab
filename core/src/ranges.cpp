@@ -25,7 +25,7 @@ const std::vector<ParameterRange>& parameterRanges() {
         {"breakupStretch", 2, 12, 5, 10, 6,
          "Copper jets elongate about 5–10× before particulating."},
         {"layers", 2, 4, 3, 4, 3,
-         "Particles across the liner wall. Penetration stops changing from about 3 across."},
+         "Particles across the liner wall. Not yet converged: depth still rises with resolution (docs/convergence.md)."},
         {"jetRefinement", 0, 5, 3, 5, 3,
          "Split levels for stretched jet material. 3 or more resolves the thinning jet."},
         {"initiationOffsetMM", 0, 4, 0, 0.3f, 0.1f,

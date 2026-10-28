@@ -3,19 +3,10 @@
 #include <array>
 #include <vector>
 #include "materials.hpp"
+#include "physics/sph.h"   // flag bits shared with the kernels
 #include "scl/api.hpp"
 
 namespace scl {
-
-// Flag bits, shared with the kernels (low 8 bits hold the material id, bits 16–18 the split generation).
-enum : uint32_t {
-    F_ACTIVE = 1u << 8,
-    F_FIXED = 1u << 9,
-    F_DAMAGED = 1u << 10,
-    F_SLEEP = 1u << 11,
-    F_VENTED = 1u << 12,
-    F_COARSE = 1u << 13,
-};
 
 struct Geometry3D {
     Config config;

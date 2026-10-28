@@ -1,5 +1,6 @@
 #include "geometry.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <random>
 
@@ -100,7 +101,8 @@ Geometry3D buildGeometry(const Config& cfg) {
     }
 
     g.used = pts.size();
-    const size_t spare = cfg.jetRefinement > 0 ? linerCount * 3 : 0;
+    // each liner particle can become 2^levels particles
+    const size_t spare = cfg.jetRefinement > 0 ? linerCount * ((size_t(1) << cfg.jetRefinement) - 1) : 0;
     g.capacity = g.used + spare;
     g.pos.assign(g.capacity, {0, 0, -1e4f, 1.3f * fF});
     g.vel.assign(g.capacity, {0, 0, 0, 1e-9f});
@@ -149,7 +151,7 @@ size_t estimateParticles(const Config& c) {
     const double liner = pi * R * (R / std::sin(a)) * c.linerThicknessFrac * CD / (dpF * dpF * dpF);
     const float RT = c.targetRadiusCD * CD;
     const double tgt = pi * RT * RT * c.targetThicknessCD * CD / (dpC * dpC * dpC);
-    return size_t(he + liner * (c.jetRefinement > 0 ? 4 : 1) + tgt);
+    return size_t(he + liner * double(size_t(1) << std::max(c.jetRefinement, 0)) + tgt);
 }
 
 }  // namespace scl
