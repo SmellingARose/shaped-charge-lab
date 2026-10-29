@@ -111,7 +111,7 @@ private:
             buf_[k] = make(f4);
         buf_["flags"] = make(n_ * 4); buf_["flags2"] = make(n_ * 4);
         cellOf_ = make(n_ * 4); rank_ = make(n_ * 4); sorted_ = make(n_ * 4);
-        const size_t nc1 = size_t(P_.gdim.w) + 1;
+        const size_t nc1 = size_t(P_.gdim.w) + SCL_EXTRA_BUCKETS;   // cells, then the dormant and free buckets
         cnt_ = make(nc1 * 4); start_ = make((nc1 + 1) * 4);
         // block sums per scan level, down to a single block
         for (size_t len = nc1, level = 0; level < kScanLevels; level++) {
@@ -185,12 +185,12 @@ private:
     void encodeStep(id<MTLComputeCommandEncoder> e) {
         // grid
         [e setBuffer:cnt_ offset:0 atIndex:0]; [e setBytes:&P_ length:sizeof(P_) atIndex:1];
-        run(e, "gClear", size_t(P_.gdim.w) + 1);
+        run(e, "gClear", size_t(P_.gdim.w) + SCL_EXTRA_BUCKETS);
         [e setBuffer:buf_["pos"] offset:0 atIndex:0]; [e setBuffer:buf_["flags"] offset:0 atIndex:1];
         [e setBuffer:cellOf_ offset:0 atIndex:2]; [e setBuffer:rank_ offset:0 atIndex:3]; [e setBuffer:cnt_ offset:0 atIndex:4];
         [e setBytes:&P_ length:sizeof(P_) atIndex:5];
         run(e, "gAssign", n_);
-        scan(e, cnt_, start_, u32(P_.gdim.w) + 1, 0);
+        scan(e, cnt_, start_, u32(P_.gdim.w) + SCL_EXTRA_BUCKETS, 0);
         [e setBuffer:cellOf_ offset:0 atIndex:0]; [e setBuffer:rank_ offset:0 atIndex:1]; [e setBuffer:start_ offset:0 atIndex:2];
         [e setBuffer:sorted_ offset:0 atIndex:3]; [e setBytes:&P_ length:sizeof(P_) atIndex:4];
         run(e, "gScatter", n_);

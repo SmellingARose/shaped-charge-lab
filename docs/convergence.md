@@ -28,3 +28,9 @@ Note: Metal and HIP crater depths at the same settings differ by about 7% (56.6 
 the difference comes from the non-deterministic order of parallel atomic operations (time-step reduction, particle
 splitting, grid counts) amplified through the chaotic penetration phase. Treat ±7% as the run-to-run spread at this
 resolution until runs are made deterministic or averaged.
+
+Correction (2026-10-29): the Metal and HIP rows above were affected by a bug, now fixed. On the GPU, the slots that
+splitting takes new particles from could hold particles of the still-sleeping target (the sort left inactive slots in
+arbitrary order), so splits overwrote part of the target before the jet arrived: about 9% of it by 13 µs at 2 particles
+across. The CPU backend was not affected. Empty slots now sort into their own bucket after all real particles
+(`SCL_EXTRA_BUCKETS` in `sph.h`), so new particles always land in empty slots. GPU crater depths need re-running.

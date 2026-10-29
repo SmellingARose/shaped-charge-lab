@@ -3,7 +3,7 @@ find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2 Shade
 find_package(Qt6 QUIET COMPONENTS GuiPrivate)
 qt_standard_project_setup(REQUIRES 6.8)
 
-qt_add_executable(ShapedChargeLab MACOSX_BUNDLE WIN32 src/main.cpp)
+qt_add_executable(ShapedChargeLab MACOSX_BUNDLE WIN32 src/main.cpp src/BatchRun.h src/BatchRun.cpp)
 set_target_properties(ShapedChargeLab PROPERTIES
     OUTPUT_NAME "Shaped Charge Lab"
     MACOSX_BUNDLE_GUI_IDENTIFIER com.smellingarose.shapedchargelab

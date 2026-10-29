@@ -32,7 +32,7 @@ kernel void kAdvance(device u32* state [[buffer(0)]], constant SimParams& P [[bu
 
 // ---- grid: counting sort into cell order
 kernel void gClear(device u32* cnt [[buffer(0)]], constant SimParams& P [[buffer(1)]], uint i [[thread_position_in_grid]]) {
-    if (i <= P.gdim.w) cnt[i] = 0;
+    if (i < P.gdim.w + SCL_EXTRA_BUCKETS) cnt[i] = 0;
 }
 
 kernel void gAssign(device v4* pos [[buffer(0)]], device u32* flags [[buffer(1)]], device u32* cellOf [[buffer(2)]],

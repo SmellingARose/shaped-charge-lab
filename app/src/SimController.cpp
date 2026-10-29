@@ -245,6 +245,7 @@ void SimController::start() {
     m_run.reset();
     m_runCfg = m_cfg;
     scl::RunOptions opt;
+    opt.memoryBudgetBytes = m_frameBudget;
     scl::Device dev;
     if (!m_devices.empty()) {
         dev = m_devices[size_t(m_deviceIndex)];
@@ -258,19 +259,21 @@ void SimController::start() {
     m_frameStats = {};
     m_progress = 0;
     QPointer<SimController> self(this);
+    // Callbacks arrive queued: one from a run that was stopped and replaced must not touch the new run
+    const int gen = ++m_runGeneration;
     m_run = scl::startRun(
         m_runCfg, opt,
-        [self](size_t index) {
-            QMetaObject::invokeMethod(self, [self, index] {
-                if (!self) return;
+        [self, gen](size_t index) {
+            QMetaObject::invokeMethod(self, [self, gen, index] {
+                if (!self || gen != self->m_runGeneration) return;
                 self->m_frameCount = int(index) + 1;
                 emit self->framesChanged();
                 if (self->m_live && !self->m_playing) self->showFrame(int(index));
             }, Qt::QueuedConnection);
         },
-        [self](float pen, bool completed) {
-            QMetaObject::invokeMethod(self, [self, pen, completed] {
-                if (!self) return;
+        [self, gen](float pen, bool completed) {
+            QMetaObject::invokeMethod(self, [self, gen, pen, completed] {
+                if (!self || gen != self->m_runGeneration) return;
                 self->poll();
                 if (completed) {
                     self->m_results.push_back(QPointF(self->m_runCfg.standoffCD, pen / self->m_runCfg.chargeDiameter));

@@ -87,10 +87,16 @@ SCL_FN bool cellInGrid(int cx, int cy, int cz, SCL_CONST const SimParams& P) {
 SCL_FN u32 cellIndex(int cx, int cy, int cz, SCL_CONST const SimParams& P) {
     return (u32(cz) * P.gdim.y + u32(cy)) * P.gdim.x + u32(cx);
 }
-/// Cell of a particle, or ncells when it is not live / outside the box (then it is vented).
+// Slots that are in no cell sort into two buckets after the cells, in this order:
+//   ncells      dormant: real particles outside the grid (the target asleep until the jet arrives, vented ones)
+//   ncells + 1  free: slots never used yet (spares for refinement)
+// so after every sort the free slots start exactly at S_USED, where splitting takes its new slots.
+#define SCL_EXTRA_BUCKETS 2u
+
+/// Cell of a particle, or one of the two buckets after the cells when it is not live (outside the box: vented).
 SCL_FN u32 particleCell(u32 i, Particles b, SCL_CONST const SimParams& P) {
     u32 f = b.flags[i];
-    if ((f & F_ACTIVE) == 0u) return P.gdim.w;
+    if ((f & F_ACTIVE) == 0u) return (f & (F_SLEEP | F_VENTED)) != 0u ? P.gdim.w : P.gdim.w + 1u;
     v4 p = b.pos[i];
     int cx = cellCoord(p.x, P.gmin.x, P.gmin.w), cy = cellCoord(p.y, P.gmin.y, P.gmin.w), cz = cellCoord(p.z, P.gmin.z, P.gmin.w);
     if (!cellInGrid(cx, cy, cz, P)) { b.flags[i] = (f & ~F_ACTIVE) | F_VENTED; return P.gdim.w; }

@@ -131,6 +131,8 @@ public:
     Q_INVOKABLE void start();
     Q_INVOKABLE void stop();
     Q_INVOKABLE void stepFrame(int delta);
+    /// Memory for recorded frames (older frames are thinned beyond it); default 3 GB.
+    void setFrameMemoryBudget(size_t bytes) { m_frameBudget = bytes; }
 
     /// Latest frame for the renderer (thread-safe; returns the same pointer until the frame changes).
     std::shared_ptr<const ViewFrame> viewFrame() const;
@@ -159,6 +161,8 @@ private:
     std::vector<scl::Device> m_devices;
     int m_deviceIndex = 0;
     int m_cpuThreads = 1;
+    size_t m_frameBudget = size_t(3) << 30;
+    int m_runGeneration = 0;   // identifies the current run to its queued callbacks
 
     std::unique_ptr<scl::Run> m_run;
     scl::Config m_runCfg;

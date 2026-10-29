@@ -27,7 +27,7 @@ public:
         for (auto* v : {&pos2_, &vel2_, &st2_, &S02_, &S12_, &aux2_, &G02_, &G12_, &G22_}) alloc(*v);
         flags_.assign(n_, 0); flags2_.assign(n_, 0);
         cellOf_.assign(n_, 0); rank_.assign(n_, 0); sorted_.assign(n_, 0);
-        cnt_.assign(size_t(P_.gdim.w) + 1, 0); start_.assign(size_t(P_.gdim.w) + 2, 0);
+        cnt_.assign(size_t(P_.gdim.w) + SCL_EXTRA_BUCKETS, 0); start_.assign(size_t(P_.gdim.w) + SCL_EXTRA_BUCKETS + 1, 0);
         for (size_t i = 0; i < n_; i++) {
             pos_[i] = mk4(g.pos[i][0], g.pos[i][1], g.pos[i][2], g.pos[i][3]);
             vel_[i] = mk4(g.vel[i][0], g.vel[i][1], g.vel[i][2], g.vel[i][3]);
@@ -116,10 +116,10 @@ private:
         // Serial counting sort: measured faster than an atomic parallel count, because many particles
         // share each cell and the counters thrash between cores.
         std::fill(cnt_.begin(), cnt_.end(), 0u);
-        for (size_t i = 0; i < n_; i++) rank_[i] = cnt_[cellOf_[i]]++;   // sentinel bucket = ncells
+        for (size_t i = 0; i < n_; i++) rank_[i] = cnt_[cellOf_[i]]++;   // then the dormant and free buckets
         u32 acc = 0;
-        for (size_t c = 0; c <= ncells; c++) { start_[c] = acc; acc += cnt_[c]; }
-        start_[ncells + 1] = acc;
+        for (size_t c = 0; c < ncells + SCL_EXTRA_BUCKETS; c++) { start_[c] = acc; acc += cnt_[c]; }
+        start_[ncells + SCL_EXTRA_BUCKETS] = acc;
         each(n_, [&](u32 i) { sorted_[start_[cellOf_[i]] + rank_[i]] = i; });
         // permute persistent arrays into cell order
         each(n_, [&](u32 k) {

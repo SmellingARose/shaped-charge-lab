@@ -172,6 +172,8 @@ private:
                 f.time = s.time;
                 f.stats = st;
                 solver_->pack(f.particles);
+                // every real particle sits below `used` after the sort (the free slots come last): keep only those
+                f.particles.resize(std::min(f.particles.size(), s.used));
                 std::vector<LinerPoint> lp;
                 solver_->liner(lp);
                 size_t index;

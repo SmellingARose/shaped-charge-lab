@@ -5,6 +5,7 @@ import ShapedCharge
 Window {
     id: win
     property bool autoRun: false
+    property bool videoMode: false   // --video: only the 3D view and its explainer, for exporting frames
     width: 1480
     height: 920
     minimumWidth: 1100
@@ -34,7 +35,8 @@ Window {
     // ------------------------------------------------------------ sidebar
     Rectangle {
         id: sidebar
-        width: 336
+        visible: !win.videoMode
+        width: win.videoMode ? 0 : 336
         height: parent.height
         color: Theme.panel
         Rectangle { anchors.right: parent.right; width: 1; height: parent.height; color: Theme.hairline }
@@ -248,13 +250,14 @@ Window {
             readonly property real roomBeside: stage.width - viewControls.width - 48
             readonly property bool beside: roomBeside >= 300
             x: 16
-            y: beside ? 16 : viewControls.y + viewControls.height + 12
-            width: Math.min(440, beside ? roomBeside : stage.width - 32)
+            y: beside || win.videoMode ? 16 : viewControls.y + viewControls.height + 12
+            width: Math.min(440, beside || win.videoMode ? Math.max(roomBeside, 300) : stage.width - 32)
         }
 
         // view controls
         Column {
             id: viewControls
+            visible: !win.videoMode
             anchors.right: parent.right
             anchors.rightMargin: 16
             y: 16
@@ -334,6 +337,7 @@ Window {
 
         Timeline {
             id: timeline
+            visible: !win.videoMode
             anchors.horizontalCenter: parent.horizontalCenter
             anchors.bottom: parent.bottom
             anchors.bottomMargin: 18
@@ -345,6 +349,7 @@ Window {
             anchors.rightMargin: 18
             anchors.bottom: timeline.top
             anchors.bottomMargin: 14
+            visible: !win.videoMode
             text: "Drag to orbit · right-drag to pan · scroll to zoom"
             color: Theme.textFaint
             font.pixelSize: 10
@@ -354,8 +359,9 @@ Window {
     // ------------------------------------------------------------ insights
     Insights {
         id: insights
+        visible: !win.videoMode
         anchors.right: parent.right
-        width: 352
+        width: win.videoMode ? 0 : 352
         height: parent.height
         Rectangle { width: 1; height: parent.height; color: Theme.hairline }
     }

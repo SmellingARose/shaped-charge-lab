@@ -43,7 +43,7 @@ __global__ void kAdvance(u32* state, SimParams P) { if (blockIdx.x == 0 && threa
 // ---- grid: counting sort into cell order
 __global__ void gClear(u32* cnt, SimParams P) {
     u32 i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i <= P.gdim.w) cnt[i] = 0;
+    if (i < P.gdim.w + SCL_EXTRA_BUCKETS) cnt[i] = 0;
 }
 __global__ void gAssign(Particles b, u32* cellOf, u32* rank, u32* cnt, SimParams P) {
     u32 i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -172,11 +172,11 @@ private:
         if (!alloc(L0_, n_) || !alloc(L1_, n_) || !alloc(L2_, n_) || !alloc(acc_, n_) || !alloc(r0_, n_) || !alloc(dS0_, n_) ||
             !alloc(dS1_, n_) || !alloc(cellOf_, n_) || !alloc(rank_, n_) || !alloc(sorted_, n_) || !alloc(frame_, n_))
             return false;
-        ncells1_ = size_t(P_.gdim.w) + 1;
-        if (!alloc(cnt_, ncells1_) || !alloc(start_, ncells1_ + 1) || !alloc(state_, S_COUNT) || !alloc(mats_, 3))
+        nbuckets_ = size_t(P_.gdim.w) + SCL_EXTRA_BUCKETS;
+        if (!alloc(cnt_, nbuckets_) || !alloc(start_, nbuckets_ + 1) || !alloc(state_, S_COUNT) || !alloc(mats_, 3))
             return false;
         // block sums per scan level, down to a single block
-        for (size_t len = ncells1_, levels = 0; levels < kScanLevels; levels++) {
+        for (size_t len = nbuckets_, levels = 0; levels < kScanLevels; levels++) {
             const size_t blocks = (len + 1023) / 1024;
             if (!alloc(sums_[levels], blocks) || !alloc(sumsScanned_[levels], blocks)) return false;
             if (blocks == 1) break;
@@ -230,9 +230,9 @@ private:
 
     void stepOnce() {
         mark(0);
-        const u32 len = u32(ncells1_);
+        const u32 len = u32(nbuckets_);
 
-        gClear<<<blocksFor(ncells1_), TPB>>>(cnt_, P_);
+        gClear<<<blocksFor(nbuckets_), TPB>>>(cnt_, P_);
         gAssign<<<blocksFor(n_), TPB>>>(particles(), cellOf_, rank_, cnt_, P_);
         scan(cnt_, start_, len, 0);
         gScatter<<<blocksFor(n_), TPB>>>(cellOf_, rank_, start_, sorted_, P_);
@@ -271,7 +271,7 @@ private:
     }
 
     SimParams P_{};
-    size_t n_ = 0, ncells1_ = 0;
+    size_t n_ = 0, nbuckets_ = 0;
     Persist cur_{}, alt_{};
     v4 *L0_ = nullptr, *L1_ = nullptr, *L2_ = nullptr, *acc_ = nullptr, *r0_ = nullptr, *dS0_ = nullptr, *dS1_ = nullptr;
     u32 *cellOf_ = nullptr, *rank_ = nullptr, *sorted_ = nullptr, *cnt_ = nullptr, *start_ = nullptr;
