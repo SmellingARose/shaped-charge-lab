@@ -19,7 +19,10 @@ app/                      Qt 6 Quick (QML) app — the only UI, on all three OSe
 ShapedChargeLab/          legacy SwiftUI prototype (reference only; delete once the Qt app reaches parity)
 ```
 
-Build: CMake ≥ 3.25. `SCL_WITH_METAL` (default on Apple), `SCL_WITH_HIP` (default when `hipcc` is found), CPU always.
+Build: CMake ≥ 3.25. `SCL_WITH_METAL` (default on Apple), CPU always. `SCL_GPU` (AUTO/HIP/CUDA/OFF) builds the
+NVIDIA/AMD backend as its own shared library, `scl_gpu` (C ABI in `core/src/gpu/gpu_plugin.h`), which the core loads
+at runtime from its executable's folder: the app needs no GPU runtime to start, and on Windows the backend can be built
+by the HIP SDK's clang while the app and core use MSVC.
 
 ## Platform matrix
 
@@ -44,7 +47,7 @@ Physics lives in `core/src/physics/` as headers of `SCL_FN` functions over plain
 
 So the three backends cannot drift apart: a physics fix is one edit.
 
-## Physics model (shared by 2D and 3D)
+## Physics model
 
 - SPH, cubic-spline kernel, Monaghan artificial viscosity, Monaghan artificial stress against tensile instability.
 - Metals: Mie–Grüneisen EOS, J2 plasticity with Johnson–Cook-style hardening and thermal softening.
@@ -52,19 +55,28 @@ So the three backends cannot drift apart: a physics fix is one edit.
 - Explosive: γ-law products, programmed burn from the detonator.
 - Refinement: per-particle deformation gradient F (dF/dt = L·F); split at principal stretch 2 along that direction,
   mass- and momentum-conserving, F halved along the split.
-- 2D axisymmetric: mirrored ghost particles at the axis, hoop terms, hoop rate scaled to the planar kernel fill.
-- 3D: uniform grid, counting sort on the GPU, data reordered into cell order every step.
+- Full 3D only (no symmetry): uniform grid, counting sort, particle data reordered into cell order every step.
+  Particles are grouped in up to 3 size levels (coarse, original liner size, three or more splits). Each pair of
+  levels is searched over ±2 cells sized for the coarser of the two: the dense grid (sorted by level, then cell;
+  rows of cells scanned as one range) when either is coarse, hashed grids for the finer pairs. Every particle within
+  reach is found, and the small jet particles no longer check thousands of out-of-reach candidates (0.8% of checks
+  were hits at 5 refinement levels with one grid).
+  One pass per step over the neighbours computes both the rates and the forces (`interactBody`).
+  Check solver changes with `scl_stephash` (fixed steps, one CPU thread, particle hash).
+  Liner at fine spacing, explosive and target at 2× spacing.
+- Runs record frames as they go: the app watches the newest frame live and can scrub/play back at any time.
 - Run ends when no liner material over the target exceeds the cutoff speed √(2R_target/ρ_jet).
 
 ## Work split
 
 1. **Core** (simulation agent): port the Swift/MSL prototype into `core/` behind `api.hpp`; CPU first, then Metal,
-   then HIP. Ships a CPU build early so the app can run against real data.
+   then HIP. Ships a stub (`core/src/stub.cpp`, generated geometry, no physics) immediately and the CPU
+   backend early so the app can run against real data.
 2. **App** (UI agent): Qt 6 Quick app in `app/` against `api.hpp` only. Must not include anything from `core/src`.
 
 ## Validation targets
 
 - Default charge (40 mm, 60° copper cone, 2.5% wall, 8 km/s explosive, 3 CD standoff into armor steel):
-  jet tip ≈ 6–7 km/s, jet ≈ 13–14% of liner mass, 2D crater ≈ 2 CD at 3–4 particles across the liner.
+  jet tip ≈ 6–7 km/s, jet ≈ 13–14% of liner mass, crater ≈ 2 CD (the 2D prototype's 3–4-across result).
 - Resolution study: results must change by < 5% between the two finest resolutions offered before a value is
   marked "realistic"/converged in the UI.

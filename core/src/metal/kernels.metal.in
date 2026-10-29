@@ -1,0 +1,121 @@
+// Metal entry points. The physics (portable.h + sph.h) is prepended at build time, so these are
+// thin wrappers: buffer binding layout is the same for every particle kernel.
+using namespace metal;
+
+#define PARTICLE_ARGS \
+    device v4* pos [[buffer(0)]], device v4* vel [[buffer(1)]], device v4* st [[buffer(2)]], \
+    device v4* S0 [[buffer(3)]], device v4* S1 [[buffer(4)]], device v4* aux [[buffer(5)]], \
+    device u32* flags [[buffer(6)]], device v4* G0 [[buffer(7)]], device v4* G1 [[buffer(8)]], device v4* G2 [[buffer(9)]], \
+    device v4* L0 [[buffer(10)]], device v4* L1 [[buffer(11)]], device v4* L2 [[buffer(12)]], \
+    device v4* acc [[buffer(13)]], device v4* r0 [[buffer(14)]], device v4* dS0 [[buffer(15)]], device v4* dS1 [[buffer(16)]], \
+    device u32* start [[buffer(17)]], device atomic_uint* state [[buffer(18)]], \
+    constant MatP* mats [[buffer(19)]], constant SimParams& P [[buffer(20)]], \
+    device u32* hstart [[buffer(22)]], device u32* hslot [[buffer(23)]]
+
+#define MAKE_PARTICLES \
+    Particles b; b.pos = pos; b.vel = vel; b.st = st; b.S0 = S0; b.S1 = S1; b.aux = aux; b.flags = flags; \
+    b.G0 = G0; b.G1 = G1; b.G2 = G2; b.L0 = L0; b.L1 = L1; b.L2 = L2; \
+    b.acc = acc; b.r0 = r0; b.dS0 = dS0; b.dS1 = dS1; \
+    Grid g; g.start = start; g.hstart = hstart; g.hslot = hslot;
+
+kernel void kEOS(PARTICLE_ARGS, uint i [[thread_position_in_grid]]) { MAKE_PARTICLES; (void)g; eosBody(i, b, mats, P); }
+kernel void kInteract(PARTICLE_ARGS, uint i [[thread_position_in_grid]]) { MAKE_PARTICLES; interactBody(i, b, g, mats, state, P); }
+kernel void kIntegrate(PARTICLE_ARGS, uint i [[thread_position_in_grid]]) { MAKE_PARTICLES; (void)g; integrateBody(i, b, state, mats, P); }
+kernel void kSplit(PARTICLE_ARGS, uint i [[thread_position_in_grid]]) { MAKE_PARTICLES; (void)g; splitBody(i, b, state, P); }
+kernel void kPack(PARTICLE_ARGS, device FrameP* out [[buffer(21)]], uint i [[thread_position_in_grid]]) {
+    MAKE_PARTICLES; (void)g; packBody(i, b, out, mats, P);
+}
+
+kernel void kFinalizeDt(device u32* state [[buffer(0)]], uint i [[thread_position_in_grid]]) { if (i == 0) finalizeDtBody(state); }
+kernel void kAdvance(device u32* state [[buffer(0)]], constant SimParams& P [[buffer(1)]], uint i [[thread_position_in_grid]]) {
+    if (i == 0) advanceBody(state, P);
+}
+
+// ---- grid: counting sort into cell order
+kernel void gClear(device u32* cnt [[buffer(0)]], constant SimParams& P [[buffer(1)]], uint i [[thread_position_in_grid]]) {
+    if (i < denseCells(P) + SCL_EXTRA_BUCKETS) cnt[i] = 0;
+}
+
+// ---- hashed grids of the finer levels (grid = level lm.x on the cells of level lm.y): clear, bucket and rank, scatter
+kernel void hClear(device u32* cnt [[buffer(0)]], constant SimParams& P [[buffer(1)]], uint i [[thread_position_in_grid]]) {
+    if (i < P.lev.y + 2u) cnt[i] = 0;
+}
+
+kernel void hAssign(device v4* pos [[buffer(0)]], device u32* flags [[buffer(1)]], device u32* bucketOf [[buffer(2)]],
+                    device u32* rank [[buffer(3)]], device atomic_uint* cnt [[buffer(4)]], constant SimParams& P [[buffer(5)]],
+                    constant uint2& lm [[buffer(6)]], device const u32* start [[buffer(7)]], uint i [[thread_position_in_grid]]) {
+    if (i >= start[denseCells(P)]) return;   // live slots only
+    Particles b; b.pos = pos; b.flags = flags;
+    u32 c = hashBucket(i, b, lm.x, lm.y, P);
+    bucketOf[i] = c;
+    if (c <= P.lev.y) rank[i] = atomic_fetch_add_explicit(&cnt[c], 1u, memory_order_relaxed);
+}
+
+kernel void hScatter(device const u32* bucketOf [[buffer(0)]], device const u32* rank [[buffer(1)]],
+                     device const u32* hs [[buffer(2)]], device u32* sl [[buffer(3)]], device const u32* start [[buffer(4)]],
+                     constant SimParams& P [[buffer(5)]], uint i [[thread_position_in_grid]]) {
+    if (i >= start[denseCells(P)]) return;
+    u32 c = bucketOf[i];
+    if (c <= P.lev.y) sl[hs[c] + rank[i]] = i;
+}
+
+// The grid sort covers only the used slots: the free ones above S_USED never hold data until splitting fills them.
+kernel void gAssign(device v4* pos [[buffer(0)]], device u32* flags [[buffer(1)]], device u32* cellOf [[buffer(2)]],
+                    device u32* rank [[buffer(3)]], device atomic_uint* cnt [[buffer(4)]], constant SimParams& P [[buffer(5)]],
+                    device const u32* state [[buffer(6)]], uint i [[thread_position_in_grid]]) {
+    if (i >= state[S_USED]) return;
+    Particles b; b.pos = pos; b.flags = flags;
+    u32 c = particleCell(i, b, P);
+    cellOf[i] = c;
+    rank[i] = atomic_fetch_add_explicit(&cnt[c], 1u, memory_order_relaxed);
+}
+
+// exclusive scan in blocks of 1024
+kernel void gScan(device const u32* inp [[buffer(0)]], device u32* outp [[buffer(1)]], device u32* sums [[buffer(2)]],
+                  constant u32& len [[buffer(3)]],
+                  uint gid [[thread_position_in_grid]], uint bid [[threadgroup_position_in_grid]],
+                  uint lane [[thread_index_in_simdgroup]], uint sg [[simdgroup_index_in_threadgroup]]) {
+    threadgroup u32 part[32];
+    u32 v = gid < len ? inp[gid] : 0u;
+    u32 ex = simd_prefix_exclusive_sum(v);
+    u32 tot = simd_sum(v);
+    if (lane == 0) part[sg] = tot;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (sg == 0) {
+        u32 pv = part[lane];
+        u32 pex = simd_prefix_exclusive_sum(pv);
+        part[lane] = pex;
+        if (lane == 31) sums[bid] = pex + pv;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (gid < len) outp[gid] = ex + part[sg];
+}
+
+kernel void gAddSums(device u32* outp [[buffer(0)]], device const u32* sums [[buffer(1)]], constant u32& len [[buffer(2)]],
+                     uint gid [[thread_position_in_grid]], uint bid [[threadgroup_position_in_grid]]) {
+    if (gid < len) outp[gid] += sums[bid];
+}
+
+kernel void gScatter(device const u32* cellOf [[buffer(0)]], device const u32* rank [[buffer(1)]],
+                     device const u32* start [[buffer(2)]], device u32* sorted [[buffer(3)]],
+                     constant SimParams& P [[buffer(4)]], device const u32* state [[buffer(5)]], uint i [[thread_position_in_grid]]) {
+    if (i >= state[S_USED]) return;
+    sorted[start[cellOf[i]] + rank[i]] = i;
+}
+
+// Reorder the persistent arrays into cell order (src 0–9, dst 10–19).
+kernel void gPermute(device const v4* pa [[buffer(0)]], device const v4* va [[buffer(1)]], device const v4* sa [[buffer(2)]],
+                     device const v4* a0 [[buffer(3)]], device const v4* a1 [[buffer(4)]], device const v4* xa [[buffer(5)]],
+                     device const u32* fa [[buffer(6)]], device const v4* g0a [[buffer(7)]], device const v4* g1a [[buffer(8)]],
+                     device const v4* g2a [[buffer(9)]],
+                     device v4* pb [[buffer(10)]], device v4* vb [[buffer(11)]], device v4* sb [[buffer(12)]],
+                     device v4* b0 [[buffer(13)]], device v4* b1 [[buffer(14)]], device v4* xb [[buffer(15)]],
+                     device u32* fb [[buffer(16)]], device v4* g0b [[buffer(17)]], device v4* g1b [[buffer(18)]],
+                     device v4* g2b [[buffer(19)]],
+                     device const u32* sorted [[buffer(20)]], constant SimParams& P [[buffer(21)]],
+                     device const u32* state [[buffer(22)]], uint k [[thread_position_in_grid]]) {
+    if (k >= state[S_USED]) return;
+    u32 j = sorted[k];
+    pb[k] = pa[j]; vb[k] = va[j]; sb[k] = sa[j]; b0[k] = a0[j]; b1[k] = a1[j]; xb[k] = xa[j]; fb[k] = fa[j];
+    g0b[k] = g0a[j]; g1b[k] = g1a[j]; g2b[k] = g2a[j];
+}

@@ -21,10 +21,6 @@ enum class Geometry { Conical, Linear };
 enum class LinerMaterial { Copper, Tantalum, Aluminum };
 enum class TargetMaterial { ArmorSteel, Aluminum6061 };
 
-/// Axisymmetric2D: fast slice solver (CPU), suitable for live viewing.
-/// Full3D: no symmetry assumed; recorded offline, then played back.
-enum class Dimension { Axisymmetric2D, Full3D };
-
 enum class Backend { Auto, CPU, Metal, HIP };
 
 struct Asymmetry {
@@ -39,16 +35,16 @@ struct Config {
     float linerThicknessFrac = 0.025f;
     float headHeightCD = 0.5f;      // explosive behind the cone apex
     float standoffCD = 3;
-    float targetThicknessCD = 7;
+    float targetThicknessCD = 4;
     float targetRadiusCD = 0.4f;
     LinerMaterial liner = LinerMaterial::Copper;
     TargetMaterial target = TargetMaterial::ArmorSteel;
-    int layers = 4;                 // particles across the liner wall (resolution)
+    int layers = 2;                 // particles across the liner wall (resolution); explosive and target use 2× spacing
     int jetRefinement = 3;          // max split generations (compute budget)
     float breakupStretch = 6;       // jet elongation at which it particulates (λ)
     float detonationVelocity = 8;   // km/s
     float approachSpeed = 0;        // m/s, charge moving toward the target when it fires
-    Asymmetry asymmetry;            // Full3D only
+    Asymmetry asymmetry;
 };
 
 /// One slider's physical range plus the band that corresponds to real hardware.
@@ -79,19 +75,6 @@ std::vector<Device> listDevices();
 
 // ---------------------------------------------------------------- render data
 
-/// 2D (axisymmetric) particle, drawn by revolving around the axis. 36 bytes, tightly packed.
-struct Particle2D {
-    float r, z;                     // mm
-    float radius;                   // mm, display size
-    float temperature;              // K
-    float speed;                    // km/s
-    float pressure;                 // GPa
-    float plasticStrain;
-    float burn;                     // explosive burn fraction 0..1
-    uint32_t matFlags;              // bits 0–7 material (0 explosive, 1 liner, 2 target), bits 8+ flags below
-};
-enum Particle2DFlags : uint32_t { P2_Surface = 1u << 8, P2_Gas = 2u << 8, P2_Damaged = 4u << 8, P2_Fixed = 8u << 8 };
-
 /// 3D particle, quantised to 12 bytes so whole runs fit in memory.
 struct Particle3D {
     uint16_t x, y, z;               // position within FrameInfo bounds, 0..65535
@@ -106,7 +89,6 @@ static_assert(sizeof(Particle3D) == 12, "Particle3D must stay 12 bytes");
 
 /// Geometry needed to place and size particles and draw the scene (charge, ground grid, standoff band).
 struct SceneInfo {
-    Dimension dimension;
     Geometry geometry;
     float chargeLength, chargeRadius, chargeDiameter;
     float zFace, zBack, targetRadius;   // target front/back face and radius, mm
@@ -131,6 +113,7 @@ struct Stats {
     double stepsPerSecond = 0;
     int particles = 0, activeParticles = 0;
     bool done = false;
+    bool refinementExhausted = false;   // ran out of split slots; results are under-refined
 };
 
 /// Measured jet as an ideal stretching rod (virtual origin z_vo, t_vo).
@@ -144,46 +127,66 @@ struct CurvePoint { float standoffCD, penetrationCD; };
 /// 1D modified-Bernoulli penetration of the measured jet versus standoff.
 std::vector<CurvePoint> penetrationCurve(const JetProfile&, const Config&, float driftSpeedKmS, float maxCD = 10, float stepCD = 0.1f);
 
+/// Peak of a penetration curve, refined between its samples by a parabola through the best point and its neighbours.
+CurvePoint bestStandoff(const std::vector<CurvePoint>&);
+
+/// The same jet fired at another approach speed (m/s). Exact without air drag (Galilean shift): every element gains
+/// the speed difference and the virtual origin moves on with the charge; stretching and breakup times are unchanged.
+JetProfile atApproachSpeed(const JetProfile&, float measuredAtMS, float approachMS);
+
+struct OptimumPoint { float approachSpeed, standoffCD, penetrationCD; };
+
+/// Best standoff, and the depth it gives, at each approach speed from 0 to maxMS, from one measured jet.
+std::vector<OptimumPoint> optimumVsApproach(const JetProfile&, const Config&, float driftSpeedKmS, float measuredAtMS,
+                                            float maxMS = 1000, float stepMS = 25);
+
 struct JetSample { float zFromFace, vz; bool isJet; };
 
 // ---------------------------------------------------------------- simulation
 
-/// Live simulation (normally Axisymmetric2D). Not thread-safe: drive it from one thread,
-/// and copy render data out with the snapshot calls.
-class Simulation {
-public:
-    virtual ~Simulation() = default;
-    virtual void step(int count) = 0;
-    virtual Stats stats() const = 0;
-    virtual SceneInfo scene() const = 0;
-    virtual void setCpuThreads(int threads) = 0;    // ignored by GPU backends
-    /// Fills `out` (resized as needed). Returns the count written.
-    virtual size_t snapshot2D(std::vector<Particle2D>& out) const = 0;
-    virtual size_t snapshot3D(std::vector<Particle3D>& out) const = 0;
-    virtual std::vector<JetSample> linerSamples(size_t maxCount) const = 0;
-    virtual bool jetProfile(JetProfile& out) const = 0;   // false until the jet has formed
+/// Every run is a full 3D simulation (no symmetry assumed). It runs on a background thread and stores
+/// frames as it goes: the app shows the newest frame while it runs ("live") and can scrub or play back
+/// any recorded frame at any time, during or after the run.
+struct Frame {
+    float time;                     // µs
+    Stats stats;
+    std::vector<Particle3D> particles;
 };
 
-std::unique_ptr<Simulation> createSimulation(const Config&, Dimension, Backend, const Device* device = nullptr);
-
-/// Offline 3D run: records frames on a background thread, playable while recording.
-struct Frame { float time; Stats stats; std::vector<Particle3D> particles; };
-
-class Recorder {
+class Run {
 public:
-    virtual ~Recorder() = default;
+    virtual ~Run() = default;
     virtual void cancel() = 0;                       // stops; keeps frames so far
+    virtual void setPaused(bool) = 0;
+    virtual void setCpuThreads(int threads) = 0;     // CPU backend only
     virtual bool running() const = 0;
     virtual size_t frameCount() const = 0;
     virtual bool frame(size_t index, Frame& out) const = 0;
     virtual SceneInfo scene() const = 0;
-    virtual Stats progress() const = 0;
+    virtual Stats progress() const = 0;              // latest solver state
+    virtual Device device() const = 0;
+    virtual std::vector<JetSample> linerSamples(size_t maxCount) const = 0;  // latest frame
+    virtual bool jetProfile(JetProfile& out) const = 0;                      // false until the jet has formed
 };
 
-/// `onFrame` and `onDone` run on the recorder thread; marshal to the UI thread yourself.
-std::unique_ptr<Recorder> startRecording(const Config&, Backend, const Device* device,
-                                         size_t memoryBudgetBytes,
-                                         std::function<void(size_t frameIndex)> onFrame,
-                                         std::function<void(float penetrationMM, bool completed)> onDone);
+struct RunOptions {
+    Backend backend = Backend::Auto;
+    const Device* device = nullptr;                  // nullptr = fastest for `backend`
+    float frameIntervalUs = 0.5f;                    // simulated time between stored frames
+    size_t memoryBudgetBytes = size_t(3) << 30;      // older frames are thinned when exceeded
+};
+
+/// Initial state of a configuration (no physics), for showing the charge and target before a run.
+/// Fast enough to call whenever a parameter changes.
+SceneInfo preview(const Config&, std::vector<Particle3D>& particles);
+
+/// Rough particle count and wall-clock estimate for the UI before starting.
+struct RunEstimate { size_t particles; double minutes; };
+RunEstimate estimateRun(const Config&, const Device&);
+
+/// `onFrame` and `onDone` are called on the run's thread; marshal to the UI thread yourself.
+std::unique_ptr<Run> startRun(const Config&, const RunOptions&,
+                              std::function<void(size_t frameIndex)> onFrame,
+                              std::function<void(float penetrationMM, bool completed)> onDone);
 
 }  // namespace scl
