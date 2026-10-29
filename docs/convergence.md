@@ -22,3 +22,4 @@ core by sizing spare slots as (2^levels − 1) × liner and reporting exhaustion
 |---|---|---|---|---|
 | Metal (M4) | 2 | 56.6 | 1.41 | ran to the physical stop rule at 145 µs; refinement budget not exhausted; jet tip 6.42 km/s, 10.5% of liner |
 | CPU vs Metal | 2 | — | — | jet tip at ~6.5 µs: CPU 7.14 km/s, Metal 7.13 km/s (same physics source) |
+| HIP (RX 6700 XT) | 2 | — | — | jet tip 7.14 km/s; measured jet 6.42 / 1.93 km/s, 10.5% of liner, identical to Metal; ~2.5× faster than the M4 GPU |

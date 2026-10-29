@@ -51,6 +51,10 @@ Installed for this project:
 | Date | Software | Version | Source | Why |
 |---|---|---|---|---|
 | 2026-10-28 | Visual Studio 2022 Build Tools: C++ workload (`Microsoft.VisualStudio.Workload.VCTools`, recommended components), MSVC 14.44 (v143) | 17.14 | winget (`Microsoft.VisualStudio.2022.BuildTools`, modify of the existing install) | host toolchain supported by the HIP SDK |
+| 2026-10-28 | AMD HIP SDK core (ROCm 6.4, from AMD's 25.Q3 package, `ROCm_SDK_Core.msi` only; display driver untouched) | 6.4 | download.amd.com | HIP backend; runtime comes from the Adrenalin driver (`amdhip64_6.dll`) |
+| 2026-10-28 | Removed the temporary 7.2/6.4 extracts and the 26.Q3 installer | | | cleanup |
+
+Result: `tools\windows\build-hip.bat` builds cleanly; the HIP backend runs on the RX 6700 XT.
 
 Working copies on `eric`: `C:\Users\ecitt\scl-src` (source synced from the Mac by `git archive`).
 
