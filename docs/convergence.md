@@ -15,3 +15,10 @@ Penetration measured at t = 110 µs. 1D modified-Bernoulli model for this jet: �
 
 Conclusion: not converged. 3D runs were under-refined because the split budget ran out; fixed in the C++
 core by sizing spare slots as (2^levels − 1) × liner and reporting exhaustion. Re-run with the C++ core.
+
+## 2026-10-28 — C++ core (shared physics header), 3D
+
+| Backend | Particles across liner | Crater (mm) | Crater (CD) | Notes |
+|---|---|---|---|---|
+| Metal (M4) | 2 | 56.6 | 1.41 | ran to the physical stop rule at 145 µs; refinement budget not exhausted; jet tip 6.42 km/s, 10.5% of liner |
+| CPU vs Metal | 2 | — | — | jet tip at ~6.5 µs: CPU 7.14 km/s, Metal 7.13 km/s (same physics source) |
