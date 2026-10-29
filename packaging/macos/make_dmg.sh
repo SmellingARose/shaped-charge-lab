@@ -22,7 +22,10 @@ ditto "$SRC_APP" "$STAGE/Shaped Charge Lab.app"
 APP="$STAGE/Shaped Charge Lab.app"
 cp "$BUILD/core/scl_smoke" "$APP/Contents/MacOS/scl_smoke"   # headless benchmark travels inside the bundle
 
-"$MACDEPLOYQT" "$APP" -qmldir="$HERE/../../app/qml" -executable="$APP/Contents/MacOS/scl_smoke" -always-overwrite -appstore-compliant   # skips Qt's qsqlodbc/qsqlpsql, which link the Qt build host's Homebrew
+"$MACDEPLOYQT" "$APP" -qmldir="$HERE/../../app/qml" -executable="$APP/Contents/MacOS/scl_smoke" -always-overwrite
+# macdeployqt copies the whole QtQuick QML tree, so QtQuick.LocalStorage brings in QtSql and every SQL driver plug-in.
+# The app uses no SQL, and Qt's prebuilt drivers link client libraries of the Qt build host (ODBC, PostgreSQL, Mimer).
+rm -rf "$APP/Contents/PlugIns/sqldrivers"
 
 # Sign inside-out (dylibs / plugins, frameworks, helpers, then the bundle). --deep is deprecated for signing.
 SIGN=(codesign --force --sign "$IDENTITY")
@@ -33,12 +36,13 @@ find "$APP/Contents/Frameworks" -maxdepth 1 -name '*.framework' -print0 | xargs 
 "${SIGN[@]}" "$APP"
 codesign --verify --strict --deep --verbose=2 "$APP"
 
-# No binary in the bundle (executables, frameworks, plugins, QML plugins) may reference the build machine's Qt.
+# No binary in the bundle (executables, frameworks, plugins, QML plugins) may load anything by absolute path except
+# the OS (/usr/lib, /System): everything else must be bundled and referenced through @rpath/@loader_path/@executable_path.
 BAD=0
 while IFS= read -r -d '' f; do
   if file -b "$f" | grep -q 'Mach-O'; then
-    if otool -L "$f" | tail -n +2 | grep -E '/opt/homebrew|/usr/local/(opt|Cellar)|/Qt/6\.' >/dev/null; then
-      echo "error: $f links a non-bundled library:"; otool -L "$f" | grep -E '/opt/homebrew|/usr/local/(opt|Cellar)|/Qt/6\.'
+    if otool -L "$f" | tail -n +2 | grep -vE '^[[:space:]]*(@|/usr/lib/|/System/)|:$' >/dev/null; then
+      echo "error: $f links a non-bundled library:"; otool -L "$f" | tail -n +2 | grep -vE '^[[:space:]]*(@|/usr/lib/|/System/)|:$'
       BAD=1
     fi
   fi
