@@ -35,8 +35,8 @@ optimal standoff distance between the charge and its target. An explosive drives
 collapses on the axis into a fast, stretching jet and a slow slug; the jet stretches, breaks into particles and
 penetrates the target. Every stage is computed by a full 3D SPH hydrocode (no symmetry assumed).
 
-> Status: early release. The simulation runs on Apple Metal, CPUs (any Mac or PC) and AMD GPUs (HIP, from source for
-> now; the Windows download is CPU-only until the GPU plug-in ships). NVIDIA (CUDA) is written but untested.
+> Status: early release. The simulation runs on Apple Metal, CPUs (any Mac or PC) and AMD Radeon GPUs (HIP; the
+> Windows download includes it and picks the GPU automatically). NVIDIA (CUDA) is written but untested.
 > Penetration depth is not yet converged with resolution; see [docs/convergence.md](docs/convergence.md).
 
 ## The app
@@ -71,7 +71,7 @@ The physics is written once (`core/src/physics/sph.h`) and compiled for every ba
 |---|---|---|
 | CPU | any x86-64 / ARM64, multithreaded | working (macOS, Windows) |
 | Metal | Apple Silicon | working |
-| HIP | AMD (ROCm on Linux, HIP SDK on Windows) | working (RX 6700 XT, ~2.9× an M4 GPU) |
+| HIP | AMD Radeon RX 6000 / 7000 / 9000 (ROCm on Linux, HIP SDK on Windows) | working (RX 6700 XT, ~2.9× an M4 GPU); in the Windows download |
 | CUDA | NVIDIA | written, untested |
 
 ## Build
@@ -88,8 +88,9 @@ open "build/app/Shaped Charge Lab.app"   # macOS; on Windows/Linux run build/app
 The app takes `--run` (start immediately), `--quit-after <s>` and `--screenshot <file>` for automated smoke tests.
 
 - **macOS**: Xcode command line tools. The Metal backend is built automatically.
-- **Windows**: MSVC or MinGW-w64. For AMD GPUs, install the AMD HIP SDK. For NVIDIA GPUs, install the CUDA toolkit.
-  CMake picks HIP, then CUDA, then falls back to CPU only. See [docs/environment.md](docs/environment.md).
+- **Windows**: Visual Studio 2022 C++ tools. The NVIDIA/AMD backend is a separate library, `scl_gpu.dll`, that the
+  app loads at startup when it sits next to the exe: build it with `tools\windows\build-hip.bat` (AMD HIP SDK 6.4),
+  then the app with `tools\windows\build-app.bat`, which deploys both. See [docs/environment.md](docs/environment.md).
 - **Linux**: GCC or Clang. Install ROCm (AMD) or the CUDA toolkit (NVIDIA) for the GPU backend.
 
 `scl_smoke [seconds] [layers] [auto|cpu|metal|hip] [cpu threads]` runs the default charge and prints progress.

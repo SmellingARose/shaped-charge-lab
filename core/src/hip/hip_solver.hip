@@ -1,10 +1,13 @@
-// GPU backend for NVIDIA and AMD. Kernels: physics/sph.h compiled as HIP (or CUDA, see hip_compat.h).
+// GPU backend for NVIDIA and AMD, built as the scl_gpu shared library (see gpu/gpu_plugin.h).
+// Kernels: physics/sph.h compiled as HIP (or CUDA, see hip_compat.h).
 #include "hip_compat.h"
 #include "../physics/sph.h"
-#include "../solver.hpp"
+#include "../gpu/gpu_plugin.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -86,16 +89,20 @@ __global__ void gPermute(Persist a, Persist b, const u32* sorted, SimParams P) {
     b.aux[k] = a.aux[j]; b.G0[k] = a.G0[j]; b.G1[k] = a.G1[j]; b.G2[k] = a.G2[j]; b.flags[k] = a.flags[j];
 }
 
-class HipSolver final : public Solver {
+class HipSolver {
 public:
-    static std::unique_ptr<Solver> create(const Geometry3D& g, int device) {
-        auto s = std::unique_ptr<HipSolver>(new HipSolver());
-        if (!s->init(g, device)) return nullptr;
+    static HipSolver* create(const SclGpuInit& g, int device) {
+        auto* s = new HipSolver();
+        if (!s->init(g, device)) { delete s; return nullptr; }
         return s;
     }
-    ~HipSolver() override { for (void* p : allocations_) hipFree(p); if (ev0_) { hipEventDestroy(ev0_); hipEventDestroy(ev1_); } }
+    ~HipSolver() {
+        for (void* p : allocations_) hipFree(p);
+        for (hipEvent_t e : {ev0_, ev1_}) if (e) hipEventDestroy(e);
+        for (hipEvent_t e : prof_) if (e) hipEventDestroy(e);
+    }
 
-    double step(int steps) override {
+    double step(int steps) {
         hipEventRecord(ev0_);
         for (int k = 0; k < steps; k++) {
             stepOnce();
@@ -111,10 +118,9 @@ public:
         return double(ms) / std::max(steps, 1);
     }
 
-    SolverState state() override {
+    void state(SclGpuState& o) {
         u32 s[S_COUNT];
         hipMemcpy(s, state_, sizeof(s), hipMemcpyDeviceToHost);
-        SolverState o;
         o.time = scl_host_float(s[S_TIME]);
         o.dt = scl_host_float(s[S_DT]);
         o.linerZ = s[S_LINERZ] ? scl_host_float(s[S_LINERZ]) - ZOFF : 0;
@@ -124,27 +130,27 @@ public:
         o.footprintMaxVz = scl_host_float(s[S_FOOTVZ]);
         o.awake = s[S_AWAKE] != 0;
         o.used = std::min<size_t>(s[S_USED], n_);
-        return o;
     }
 
-    void pack(std::vector<Particle3D>& out) override {
+    void pack(void* out) {
         kPack<<<blocksFor(n_), TPB>>>(particles(), frame_, mats_, P_);
-        out.resize(n_);
-        hipMemcpy(out.data(), frame_, n_ * sizeof(Particle3D), hipMemcpyDeviceToHost);
+        hipMemcpy(out, frame_, n_ * sizeof(FrameP), hipMemcpyDeviceToHost);
     }
 
-    void liner(std::vector<LinerPoint>& out) override {
+    size_t liner(float* out) {
         std::vector<v4> p(n_), v(n_);
         std::vector<u32> f(n_);
         hipMemcpy(p.data(), cur_.pos, n_ * sizeof(v4), hipMemcpyDeviceToHost);
         hipMemcpy(v.data(), cur_.vel, n_ * sizeof(v4), hipMemcpyDeviceToHost);
         hipMemcpy(f.data(), cur_.flags, n_ * sizeof(u32), hipMemcpyDeviceToHost);
-        out.clear();
-        for (size_t i = 0; i < n_; i++)
-            if ((f[i] & 255u) == 1u && (f[i] & F_ACTIVE)) out.push_back({p[i].x, p[i].y, p[i].z, v[i].z, v[i].w});
+        size_t m = 0;
+        for (size_t i = 0; i < n_; i++) {
+            if ((f[i] & 255u) != 1u || !(f[i] & F_ACTIVE)) continue;
+            float* o = out + 5 * m++;
+            o[0] = p[i].x; o[1] = p[i].y; o[2] = p[i].z; o[3] = v[i].z; o[4] = v[i].w;
+        }
+        return m;
     }
-
-    Device device() const override { return dev_; }
 
 private:
     static float scl_host_float(u32 u) { float f; std::memcpy(&f, &u, 4); return f; }
@@ -155,16 +161,11 @@ private:
         return true;
     }
 
-    bool init(const Geometry3D& g, int device) {
+    bool init(const SclGpuInit& g, int device) {
         HIP_OK(hipSetDevice(device));
-        hipDeviceProp_t prop;
-        HIP_OK(hipGetDeviceProperties(&prop, device));
-        dev_.backend = Backend::HIP;
-        dev_.name = std::string(prop.name);
-        dev_.computeUnits = prop.multiProcessorCount;
-        dev_.memoryBytes = prop.totalGlobalMem;
-        P_ = makeSimParams(g);
+        std::memcpy(&P_, g.params, sizeof(SimParams));
         n_ = g.capacity;
+        const MatP* mats = static_cast<const MatP*>(g.materials);
         Persist* sets[2] = {&cur_, &alt_};
         for (Persist* s : sets) {
             if (!alloc(s->pos, n_) || !alloc(s->vel, n_) || !alloc(s->st, n_) || !alloc(s->S0, n_) || !alloc(s->S1, n_) ||
@@ -182,9 +183,9 @@ private:
         std::vector<v4> pos(n_), vel(n_), st(n_), aux(n_), zero(n_, mk4(0, 0, 0, 0));
         std::vector<v4> G0(n_, mk4(1, 0, 0, 0)), G1(n_, mk4(0, 1, 0, 0)), G2(n_, mk4(0, 0, 1, 0));
         for (size_t i = 0; i < n_; i++) {
-            pos[i] = mk4(g.pos[i][0], g.pos[i][1], g.pos[i][2], g.pos[i][3]);
-            vel[i] = mk4(g.vel[i][0], g.vel[i][1], g.vel[i][2], g.vel[i][3]);
-            st[i] = mk4(g.materials[g.flags[i] & 255u].rho0, 0, 0, 1);
+            pos[i] = mk4(g.pos[4 * i], g.pos[4 * i + 1], g.pos[4 * i + 2], g.pos[4 * i + 3]);
+            vel[i] = mk4(g.vel[4 * i], g.vel[4 * i + 1], g.vel[4 * i + 2], g.vel[4 * i + 3]);
+            st[i] = mk4(mats[g.flags[i] & 255u].rho0, 0, 0, 1);
             aux[i] = mk4(0, g.detonationTime[i], 0, 0);
         }
         const size_t f4 = n_ * sizeof(v4);
@@ -197,14 +198,13 @@ private:
         HIP_OK(hipMemcpy(cur_.G0, G0.data(), f4, hipMemcpyHostToDevice));
         HIP_OK(hipMemcpy(cur_.G1, G1.data(), f4, hipMemcpyHostToDevice));
         HIP_OK(hipMemcpy(cur_.G2, G2.data(), f4, hipMemcpyHostToDevice));
-        HIP_OK(hipMemcpy(cur_.flags, g.flags.data(), n_ * sizeof(u32), hipMemcpyHostToDevice));
+        HIP_OK(hipMemcpy(cur_.flags, g.flags, n_ * sizeof(u32), hipMemcpyHostToDevice));
         for (v4* p : {L0_, L1_, L2_, acc_, r0_, dS0_, dS1_}) HIP_OK(hipMemcpy(p, zero.data(), f4, hipMemcpyHostToDevice));
-        HIP_OK(hipMemcpy(mats_, g.materials.data(), sizeof(MatP) * 3, hipMemcpyHostToDevice));
-        u32 s[S_COUNT];
-        initState(s, g.used);
-        HIP_OK(hipMemcpy(state_, s, sizeof(s), hipMemcpyHostToDevice));
+        HIP_OK(hipMemcpy(mats_, mats, sizeof(MatP) * 3, hipMemcpyHostToDevice));
+        HIP_OK(hipMemcpy(state_, g.state, sizeof(u32) * S_COUNT, hipMemcpyHostToDevice));
         HIP_OK(hipEventCreate(&ev0_));
         HIP_OK(hipEventCreate(&ev1_));
+        if (profile_) for (hipEvent_t& e : prof_) HIP_OK(hipEventCreate(&e));
         return true;
     }
 
@@ -217,6 +217,7 @@ private:
     }
 
     void stepOnce() {
+        mark(0);
         const u32 len = u32(ncells1_);
         const unsigned scanBlocks = (len + 1023) / 1024;
         gClear<<<blocksFor(ncells1_), TPB>>>(cnt_, P_);
@@ -227,14 +228,38 @@ private:
         gScatter<<<blocksFor(n_), TPB>>>(cellOf_, rank_, start_, sorted_, P_);
         gPermute<<<blocksFor(n_), TPB>>>(cur_, alt_, sorted_, P_);
         std::swap(cur_, alt_);
+        mark(1);
         Particles b = particles();
         Grid g{start_};
         kEOS<<<blocksFor(n_), TPB>>>(b, mats_, P_);
+        mark(2);
         kRates<<<blocksFor(n_), TPB>>>(b, g, mats_, P_);
+        mark(3);
         kForces<<<blocksFor(n_), TPB>>>(b, g, state_, P_);
+        mark(4);
         kFinalizeDt<<<1, 1>>>(state_);
         kIntegrate<<<blocksFor(n_), TPB>>>(b, state_, mats_, P_);
         kAdvance<<<1, 1>>>(state_, P_);
+        mark(5);
+        if (profile_) report();
+    }
+
+    // SCL_PROFILE=1: per-phase GPU times, averaged over 50 steps (synchronises every step, so only for measuring)
+    void mark(int k) { if (profile_) hipEventRecord(prof_[k]); }
+    void report() {
+        hipEventSynchronize(prof_[5]);
+        for (int k = 0; k < 5; k++) {
+            float ms = 0;
+            hipEventElapsedTime(&ms, prof_[k], prof_[k + 1]);
+            profMs_[k] += ms;
+        }
+        if (++profSteps_ < 50) return;
+        u32 used = 0;
+        hipMemcpy(&used, state_ + S_USED, sizeof(u32), hipMemcpyDeviceToHost);
+        std::fprintf(stderr, "gpu profile ms/step: grid %.2f eos %.2f rates %.2f forces %.2f integrate %.2f (used %u of %zu)\n",
+                     profMs_[0] / 50, profMs_[1] / 50, profMs_[2] / 50, profMs_[3] / 50, profMs_[4] / 50, used, n_);
+        profSteps_ = 0;
+        for (double& v : profMs_) v = 0;
     }
 
     SimParams P_{};
@@ -248,28 +273,48 @@ private:
     std::vector<void*> allocations_;
     hipEvent_t ev0_ = nullptr, ev1_ = nullptr;
     int stepCounter_ = 0;
-    Device dev_;
+    bool profile_ = std::getenv("SCL_PROFILE") != nullptr;
+    hipEvent_t prof_[6] = {};
+    double profMs_[5] = {};
+    int profSteps_ = 0;
+};
+
+int deviceCount() {
+    int count = 0;
+    return hipGetDeviceCount(&count) == hipSuccess ? count : 0;
+}
+
+int deviceInfo(int index, SclGpuDevice* out) {
+    hipDeviceProp_t prop;
+    if (hipGetDeviceProperties(&prop, index) != hipSuccess) return 1;
+    std::snprintf(out->name, sizeof(out->name), "%s", prop.name);
+    out->computeUnits = prop.multiProcessorCount;
+    out->memoryBytes = prop.totalGlobalMem;
+    return 0;
+}
+
+HipSolver* as(void* s) { return static_cast<HipSolver*>(s); }
+
+const SclGpuPlugin kPlugin = {
+    SCL_GPU_PLUGIN_ABI,
+    sizeof(SimParams), sizeof(MatP), sizeof(FrameP), S_COUNT,
+#if defined(__HIPCC__) || defined(SCL_USE_HIP_RUNTIME)
+    "HIP",
+#else
+    "CUDA",
+#endif
+    deviceCount,
+    deviceInfo,
+    [](const SclGpuInit* g, int device) -> void* { return HipSolver::create(*g, device); },
+    [](void* s) { delete as(s); },
+    [](void* s, int steps) { return as(s)->step(steps); },
+    [](void* s, SclGpuState* o) { as(s)->state(*o); },
+    [](void* s, void* out) { as(s)->pack(out); },
+    [](void* s, float* out) { return as(s)->liner(out); },
 };
 
 }  // namespace
 
-std::unique_ptr<Solver> makeHipSolver(const Geometry3D& g, int deviceIndex) { return HipSolver::create(g, deviceIndex); }
-
-std::vector<Device> hipDevices() {
-    std::vector<Device> out;
-    int count = 0;
-    if (hipGetDeviceCount(&count) != hipSuccess) return out;
-    for (int k = 0; k < count; k++) {
-        hipDeviceProp_t prop;
-        if (hipGetDeviceProperties(&prop, k) != hipSuccess) continue;
-        Device d;
-        d.backend = Backend::HIP;
-        d.name = prop.name;
-        d.computeUnits = prop.multiProcessorCount;
-        d.memoryBytes = prop.totalGlobalMem;
-        out.push_back(d);
-    }
-    return out;
-}
-
 }  // namespace scl
+
+SCL_GPU_EXPORT const SclGpuPlugin* scl_gpu_plugin(void) { return &scl::kPlugin; }

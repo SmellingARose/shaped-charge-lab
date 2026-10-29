@@ -38,9 +38,5 @@ std::unique_ptr<Solver> makeCpuSolver(const Geometry3D&, int threads);
 std::unique_ptr<Solver> makeMetalSolver(const Geometry3D&);
 std::vector<Device> metalDevices();
 #endif
-#if defined(SCL_WITH_HIP)
-std::unique_ptr<Solver> makeHipSolver(const Geometry3D&, int deviceIndex);
-std::vector<Device> hipDevices();
-#endif
 
 }  // namespace scl

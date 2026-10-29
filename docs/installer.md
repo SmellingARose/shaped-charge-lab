@@ -15,8 +15,10 @@ End users install the app; developers additionally need the toolchains in [envir
 | NVIDIA GPU: CUDA runtime | link `cudart` statically (already configured), so only the NVIDIA driver is needed; the app falls back to the CPU backend without it |
 | No GPU / unsupported GPU | CPU backend, always available |
 
-The GPU backend should ship as a separate plug-in DLL loaded at runtime, so the main executable starts on any
-machine and only the plug-in depends on the AMD/NVIDIA runtime.
+Done: the GPU backend ships as `scl_gpu.dll` next to the exe (in the `.msi`), loaded at startup
+(`core/src/gpu/gpu_host.cpp`). The main executable starts on any machine; only the plug-in depends on the AMD runtime,
+and without it (or without an AMD GPU) the app lists only the CPU. One plug-in per install for now: the download carries
+the AMD build; an NVIDIA build of the same library is a separate `SCL_GPU=CUDA` build.
 
 ### Developer setup (documented, can be scripted with an elevated "setup-dev.ps1")
 

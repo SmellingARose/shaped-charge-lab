@@ -65,10 +65,20 @@ if(WIN32)
       message(WARNING "MSVC runtime DLLs not found: the deploy folder will need the VC++ Redistributable installed")
     endif()
     set(_dep ${CMAKE_BINARY_DIR}/deploy)
+    # NVIDIA/AMD backend: scl_gpu.dll, built by the GPU toolchain in its own tree (tools/windows/build-hip.bat),
+    # ships next to the exe; the core loads it at startup when present.
+    set(SCL_GPU_PLUGIN "" CACHE FILEPATH "Prebuilt scl_gpu.dll to deploy with the app (empty: CPU only)")
+    set(_gpu_copy "")
+    if(TARGET scl_gpu)
+      set(_gpu_copy COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:scl_gpu> ${_dep}/)
+    elseif(SCL_GPU_PLUGIN)
+      set(_gpu_copy COMMAND ${CMAKE_COMMAND} -E copy ${SCL_GPU_PLUGIN} ${_dep}/)
+    endif()
     add_custom_target(scl_deploy
       COMMAND ${CMAKE_COMMAND} -E rm -rf ${_dep}
       COMMAND ${CMAKE_COMMAND} -E make_directory ${_dep}
       COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:ShapedChargeLab> $<TARGET_FILE:scl_smoke> ${CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS} ${_dep}/
+      ${_gpu_copy}
       COMMAND ${SCL_WINDEPLOYQT} --qmldir ${CMAKE_CURRENT_SOURCE_DIR}/qml --no-translations --no-compiler-runtime "${_dep}/$<TARGET_FILE_NAME:ShapedChargeLab>"
       DEPENDS ShapedChargeLab scl_smoke VERBATIM)
   endif()

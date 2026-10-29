@@ -49,6 +49,37 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install ninja
 
+      # AMD GPU backend (scl_gpu.dll): built by the HIP SDK's clang in its own tree, deployed next to the app.
+      # Only the SDK core MSI is installed (the full AMD package would also install a display driver).
+      - name: AMD HIP SDK cache (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/hipsdk
+          key: hip-sdk-25.Q3-core
+
+      - name: AMD HIP SDK 6.4 (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dir = "$env:RUNNER_TEMP\hipsdk"
+          $msi = "$dir\Packages\Apps\ROCmSDKPackages\SDKCore\ROCm_SDK_Core.msi"
+          if (-not (Test-Path $msi)) {
+            $exe = "$env:RUNNER_TEMP\hip-sdk.exe"
+            Invoke-WebRequest "https://download.amd.com/developer/eula/rocm-hub/AMD-Software-PRO-Edition-25.Q3-Win10-Win11-For-HIP.exe" -OutFile $exe
+            New-Item -ItemType Directory -Force $dir | Out-Null
+            tar.exe -xf $exe -C $dir Packages/Apps/ROCmSDKPackages/SDKCore
+            Remove-Item $exe
+          }
+          $p = Start-Process msiexec -ArgumentList '/i', $msi, '/qn', '/l*v', "$env:RUNNER_TEMP\hip-sdk.log" -PassThru -Wait
+          if ($p.ExitCode -ne 0) { Get-Content "$env:RUNNER_TEMP\hip-sdk.log" -Tail 40; exit $p.ExitCode }
+          "HIP_PATH=C:\Program Files\AMD\ROCm\6.4\" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+
+      - name: GPU backend (Windows, scl_gpu.dll)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: tools\windows\build-hip.bat
+
       - name: MSVC environment
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
@@ -56,8 +87,11 @@ jobs:
           arch: x64
 
       - name: Configure
-        # The AMD/NVIDIA GPU backend ships later as a runtime-loaded plug-in; these builds use CPU (and Metal on macOS).
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSCL_GPU=OFF
+        # The app and core use the platform compiler; on Windows the GPU backend from build-hip is deployed beside it.
+        run: |
+          GPU=""
+          [[ "$RUNNER_OS" == "Windows" ]] && GPU="-DSCL_GPU_PLUGIN=$(cygpath -m "$PWD")/build-hip/core/scl_gpu.dll"
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSCL_GPU=OFF $GPU
 
       - name: Build
         run: cmake --build build
@@ -71,6 +105,7 @@ jobs:
         run: |
           cmake --build build --target scl_deploy
           ls build/deploy/vcruntime140.dll build/deploy/msvcp140.dll   # app-local MSVC runtime
+          ls build/deploy/scl_gpu.dll                                     # AMD GPU backend
 
       - name: App launch smoke (screenshot)
         if: github.ref_type != 'tag'
@@ -110,6 +145,7 @@ jobs:
             MSI=$(cygpath -w dist/*.msi)
             pwsh -Command "\$p = Start-Process msiexec -ArgumentList '/i','$MSI','/qn','/l*v','msi.log' -PassThru -Wait; exit \$p.ExitCode" || { tail -50 msi.log; exit 1; }
             ls -la "/c/Program Files/Shaped Charge Lab" || { iconv -f UTF-16LE -t UTF-8 msi.log | grep -iE "error|return value 3|INSTALLFOLDER" | head -40; exit 1; }
+            ls "/c/Program Files/Shaped Charge Lab/scl_gpu.dll"
             "/c/Program Files/Shaped Charge Lab/scl_smoke.exe" 5 2 cpu
             pwsh -Command "\$p = Start-Process -FilePath 'C:/Program Files/Shaped Charge Lab/Shaped Charge Lab.exe' -ArgumentList '--quit-after','8','--screenshot','installed-${{ matrix.name }}.png' -PassThru -Wait; exit \$p.ExitCode"
             pwsh -Command "\$p = Start-Process msiexec -ArgumentList '/x','$MSI','/qn' -PassThru -Wait; exit \$p.ExitCode"

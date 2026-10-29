@@ -19,7 +19,10 @@ app/                      Qt 6 Quick (QML) app — the only UI, on all three OSe
 ShapedChargeLab/          legacy SwiftUI prototype (reference only; delete once the Qt app reaches parity)
 ```
 
-Build: CMake ≥ 3.25. `SCL_WITH_METAL` (default on Apple), `SCL_WITH_HIP` (default when `hipcc` is found), CPU always.
+Build: CMake ≥ 3.25. `SCL_WITH_METAL` (default on Apple), CPU always. `SCL_GPU` (AUTO/HIP/CUDA/OFF) builds the
+NVIDIA/AMD backend as its own shared library, `scl_gpu` (C ABI in `core/src/gpu/gpu_plugin.h`), which the core loads
+at runtime from its executable's folder: the app needs no GPU runtime to start, and on Windows the backend can be built
+by the HIP SDK's clang while the app and core use MSVC.
 
 ## Platform matrix
 

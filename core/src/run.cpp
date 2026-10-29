@@ -9,13 +9,16 @@
 #include <thread>
 #include "backends.hpp"
 #include "solver.hpp"
+#if !defined(__APPLE__)
+#include "gpu/gpu_host.hpp"
+#endif
 
 namespace scl {
 
 std::vector<Device> gpuDevices() {
     std::vector<Device> out;
-#if defined(SCL_WITH_HIP)
-    for (auto& d : hipDevices()) out.push_back(d);
+#if !defined(__APPLE__)
+    for (auto& d : gpuPluginDevices()) out.push_back(d);
 #endif
 #if defined(SCL_WITH_METAL)
     for (auto& d : metalDevices()) out.push_back(d);
@@ -34,14 +37,14 @@ std::unique_ptr<Solver> makeSolver(const Geometry3D& g, const RunOptions& o) {
 #if defined(SCL_WITH_METAL)
     if (want == Backend::Metal) if (auto s = makeMetalSolver(g)) return s;
 #endif
-#if defined(SCL_WITH_HIP)
+#if !defined(__APPLE__)
     if (want == Backend::HIP) {
         int index = 0;
         if (o.device) {
-            auto list = hipDevices();
+            auto list = gpuPluginDevices();
             for (size_t k = 0; k < list.size(); k++) if (list[k].name == o.device->name) index = int(k);
         }
-        if (auto s = makeHipSolver(g, index)) return s;
+        if (auto s = makeGpuPluginSolver(g, index)) return s;
     }
 #endif
     int threads = int(std::max(1u, std::thread::hardware_concurrency()));

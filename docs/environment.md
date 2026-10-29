@@ -60,7 +60,8 @@ Installed for this project:
 | 2026-10-28 | .NET SDK (per user, `%LOCALAPPDATA%\Microsoft\dotnet`) | 8.0.427 | `dotnet-install.ps1 -Channel 8.0` | runs the WiX tool |
 | 2026-10-28 | WiX Toolset (dotnet global tool, `%USERPROFILE%\.dotnet\tools`) | 5.0.2 | `dotnet tool install --global wix --version 5.0.2` | builds the `.msi`; needs `DOTNET_ROOT=%LOCALAPPDATA%\Microsoft\dotnet` |
 
-Result: `tools\windows\build-hip.bat` builds cleanly; the HIP backend runs on the RX 6700 XT.
+Result: `tools\windows\build-hip.bat` builds `build-hip\core\scl_gpu.dll` (RDNA2–4 targets); the HIP backend runs on
+the RX 6700 XT, loaded by the MSVC-built app and `scl_smoke`.
 `tools\windows\build-app.bat` builds and deploys the app as CI does; the `.msi` from `packaging/windows/make_msi.sh`
 (run with Git Bash) installs, launches and uninstalls silently from the SSH session.
 
@@ -88,6 +89,7 @@ packaging/macos/make_dmg.sh build-ci build-ci/dist
 `eric` (from the source folder; WiX needs the .NET location):
 
 ```bat
+tools\windows\build-hip.bat
 tools\windows\build-app.bat
 set "DOTNET_ROOT=%LOCALAPPDATA%\Microsoft\dotnet"
 set "PATH=%USERPROFILE%\.dotnet\tools;%PATH%"
@@ -95,3 +97,7 @@ set "PATH=%USERPROFILE%\.dotnet\tools;%PATH%"
 ```
 
 Results on 2026-10-28: the `.dmg` (57 MB) and the `.msi` (30 MB) both install and launch, and the bundled `scl_smoke` runs.
+The installed `.msi` picks the RX 6700 XT on its own (`scl_gpu.dll` uses the HIP runtime of the Radeon driver).
+
+CI installs only the HIP SDK core MSI (extracted from AMD's 25.Q3 package, cached) on the Windows runner to build
+`scl_gpu.dll`; the runner has no AMD GPU, so its smoke tests exercise the CPU fallback.
