@@ -33,11 +33,15 @@ Findings:
   AMD supports the VS 2022 toolset (MSVC v143).
 - The SSH account is not elevated, so installers that need admin must be run from an elevated prompt on the machine.
 
-Proper setup (needs one elevated PowerShell on `eric`):
-1. Update the AMD Adrenalin driver to the release paired with HIP SDK 7.2 (it provides the HIP 7 runtime).
-2. Install HIP SDK 7.2 with its installer, deselecting the bundled PRO display driver (GUI) so the gaming driver stays.
-3. Install Visual Studio 2022 Build Tools with the C++ workload (MSVC v143) next to the existing VS 18 Build Tools.
-4. Delete the temporary extracts above.
+Proper setup (one elevated PowerShell on `eric`). This keeps the gaming driver, whose HIP 6 runtime matches HIP SDK 6.4:
+
+```powershell
+winget install --id Microsoft.VisualStudio.2022.BuildTools --accept-package-agreements --accept-source-agreements --override "--quiet --wait --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+Start-Process msiexec -Wait -ArgumentList '/i', "$env:USERPROFILE\Downloads\hipsdk64\Packages\Apps\ROCmSDKPackages\SDKCore\ROCm_SDK_Core.msi", '/qn', '/L*v', "$env:USERPROFILE\hip-sdk-install.log"
+Remove-Item -Recurse -Force "$env:USERPROFILE\rocm", "$env:USERPROFILE\rocm64", "$env:USERPROFILE\Downloads\hipsdk", "$env:USERPROFILE\Downloads\AMD-Software-PRO-Edition-26.Q3-Win11-For-HIP.exe"
+```
+
+(HIP SDK 7.2 would instead need AMD's PRO display driver, which replaces the Adrenalin gaming driver.)
 
 Installed for this project:
 
