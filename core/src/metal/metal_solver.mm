@@ -97,7 +97,7 @@ private:
         opts.mathMode = MTLMathModeFast;
         id<MTLLibrary> lib = [dev newLibraryWithSource:[NSString stringWithUTF8String:kMetalSource] options:opts error:&err];
         if (!lib) { NSLog(@"Metal compile failed: %@", err); return; }
-        for (NSString* name in @[@"kEOS", @"kRates", @"kForces", @"kIntegrate", @"kSplit", @"kPack", @"kFinalizeDt", @"kAdvance",
+        for (NSString* name in @[@"kEOS", @"kInteract", @"kIntegrate", @"kSplit", @"kPack", @"kFinalizeDt", @"kAdvance",
                                  @"gClear", @"gAssign", @"gScan", @"gAddSums", @"gScatter", @"gPermute"]) {
             id<MTLFunction> fn = [lib newFunctionWithName:name];
             id<MTLComputePipelineState> pso = [dev newComputePipelineStateWithFunction:fn error:&err];
@@ -200,8 +200,7 @@ private:
         for (int k = 0; k < 10; k++) std::swap(buf_[persist[k]], buf_[std::string(persist[k]) + "2"]);
         // physics
         dispatchParticles(e, "kEOS", n_);
-        dispatchParticles(e, "kRates", n_);
-        dispatchParticles(e, "kForces", n_);
+        dispatchParticles(e, "kInteract", n_);
         [e setBuffer:state_ offset:0 atIndex:0];
         run(e, "kFinalizeDt", 1);
         dispatchParticles(e, "kIntegrate", n_);

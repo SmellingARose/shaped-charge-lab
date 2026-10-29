@@ -141,9 +141,7 @@ private:
         const size_t live = start_[P_.gdim.w];
         each(n_, [&](u32 i) { eosBody(i, b, mats_, P_); });
         auto t2 = clk::now();
-        each(live, [&](u32 i) { ratesBody(i, b, g, mats_, P_); });
-        auto t3 = clk::now();
-        each(live, [&](u32 i) { forcesBody(i, b, g, state_, P_); });
+        each(live, [&](u32 i) { interactBody(i, b, g, mats_, state_, P_); });
         auto t4 = clk::now();
         finalizeDtBody(state_);
         each(n_, [&](u32 i) { integrateBody(i, b, state_, mats_, P_); });
@@ -151,16 +149,16 @@ private:
         auto t5 = clk::now();
         if (profile_) {
             auto ms = [](auto a, auto b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
-            prof_[0] += ms(t0, t1); prof_[1] += ms(t1, t2); prof_[2] += ms(t2, t3); prof_[3] += ms(t3, t4); prof_[4] += ms(t4, t5);
+            prof_[0] += ms(t0, t1); prof_[1] += ms(t1, t2); prof_[2] += ms(t2, t4); prof_[3] += ms(t4, t5);
             if (++profSteps_ == 50) {
-                std::fprintf(stderr, "cpu profile ms/step: grid %.2f eos %.2f rates %.2f forces %.2f integrate %.2f (live %zu)\n",
-                             prof_[0] / 50, prof_[1] / 50, prof_[2] / 50, prof_[3] / 50, prof_[4] / 50, live);
+                std::fprintf(stderr, "cpu profile ms/step: grid %.2f eos %.2f neighbours %.2f integrate %.2f (live %zu)\n",
+                             prof_[0] / 50, prof_[1] / 50, prof_[2] / 50, prof_[3] / 50, live);
                 profSteps_ = 0; for (double& v : prof_) v = 0;
             }
         }
     }
     bool profile_ = std::getenv("SCL_PROFILE") != nullptr;
-    double prof_[5] = {0, 0, 0, 0, 0};
+    double prof_[4] = {0, 0, 0, 0};
     int profSteps_ = 0;
 
     SimParams P_;

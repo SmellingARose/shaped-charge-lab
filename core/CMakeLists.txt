@@ -28,6 +28,9 @@ endif()
 
 add_executable(scl_smoke ${PROJECT_SOURCE_DIR}/tools/smoke.cpp)
 target_link_libraries(scl_smoke PRIVATE scl_core)
+add_executable(scl_stephash ${PROJECT_SOURCE_DIR}/tools/stephash.cpp)   # bit-for-bit check of solver changes
+target_link_libraries(scl_stephash PRIVATE scl_core)
+target_include_directories(scl_stephash PRIVATE src)
 
 # ---- Metal backend (macOS): physics headers + entry points spliced into one MSL source string
 if(APPLE)

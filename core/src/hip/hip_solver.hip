@@ -25,11 +25,8 @@ inline unsigned blocksFor(size_t n) { return unsigned((n + TPB - 1) / TPB); }
 __global__ void kEOS(Particles b, const MatP* mats, SimParams P) {
     eosBody(blockIdx.x * blockDim.x + threadIdx.x, b, mats, P);
 }
-__global__ void kRates(Particles b, Grid g, const MatP* mats, SimParams P) {
-    ratesBody(blockIdx.x * blockDim.x + threadIdx.x, b, g, mats, P);
-}
-__global__ void kForces(Particles b, Grid g, u32* state, SimParams P) {
-    forcesBody(blockIdx.x * blockDim.x + threadIdx.x, b, g, state, P);
+__global__ void kInteract(Particles b, Grid g, const MatP* mats, u32* state, SimParams P) {
+    interactBody(blockIdx.x * blockDim.x + threadIdx.x, b, g, mats, state, P);
 }
 __global__ void kIntegrate(Particles b, u32* state, const MatP* mats, SimParams P) {
     integrateBody(blockIdx.x * blockDim.x + threadIdx.x, b, state, mats, P);
@@ -233,22 +230,20 @@ private:
         Grid g{start_};
         kEOS<<<blocksFor(n_), TPB>>>(b, mats_, P_);
         mark(2);
-        kRates<<<blocksFor(n_), TPB>>>(b, g, mats_, P_);
+        kInteract<<<blocksFor(n_), TPB>>>(b, g, mats_, state_, P_);
         mark(3);
-        kForces<<<blocksFor(n_), TPB>>>(b, g, state_, P_);
-        mark(4);
         kFinalizeDt<<<1, 1>>>(state_);
         kIntegrate<<<blocksFor(n_), TPB>>>(b, state_, mats_, P_);
         kAdvance<<<1, 1>>>(state_, P_);
-        mark(5);
+        mark(4);
         if (profile_) report();
     }
 
     // SCL_PROFILE=1: per-phase GPU times, averaged over 50 steps (synchronises every step, so only for measuring)
     void mark(int k) { if (profile_) hipEventRecord(prof_[k]); }
     void report() {
-        hipEventSynchronize(prof_[5]);
-        for (int k = 0; k < 5; k++) {
+        hipEventSynchronize(prof_[4]);
+        for (int k = 0; k < 4; k++) {
             float ms = 0;
             hipEventElapsedTime(&ms, prof_[k], prof_[k + 1]);
             profMs_[k] += ms;
@@ -256,8 +251,8 @@ private:
         if (++profSteps_ < 50) return;
         u32 used = 0;
         hipMemcpy(&used, state_ + S_USED, sizeof(u32), hipMemcpyDeviceToHost);
-        std::fprintf(stderr, "gpu profile ms/step: grid %.2f eos %.2f rates %.2f forces %.2f integrate %.2f (used %u of %zu)\n",
-                     profMs_[0] / 50, profMs_[1] / 50, profMs_[2] / 50, profMs_[3] / 50, profMs_[4] / 50, used, n_);
+        std::fprintf(stderr, "gpu profile ms/step: grid %.2f eos %.2f neighbours %.2f integrate %.2f (used %u of %zu)\n",
+                     profMs_[0] / 50, profMs_[1] / 50, profMs_[2] / 50, profMs_[3] / 50, used, n_);
         profSteps_ = 0;
         for (double& v : profMs_) v = 0;
     }
@@ -274,8 +269,8 @@ private:
     hipEvent_t ev0_ = nullptr, ev1_ = nullptr;
     int stepCounter_ = 0;
     bool profile_ = std::getenv("SCL_PROFILE") != nullptr;
-    hipEvent_t prof_[6] = {};
-    double profMs_[5] = {};
+    hipEvent_t prof_[5] = {};
+    double profMs_[4] = {};
     int profSteps_ = 0;
 };
 

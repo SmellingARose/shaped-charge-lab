@@ -155,35 +155,79 @@ SCL_FN void eosBody(u32 i, Particles b, SCL_CONST const MatP* mats, SCL_CONST co
 }
 
 /// Velocity gradient, continuity, Jaumann stress rate and pdV/deviatoric work.
-SCL_FN void ratesBody(u32 i, Particles b, Grid g, SCL_CONST const MatP* mats, SCL_CONST const SimParams& P) {
+/// One pass over the neighbours for everything that reads them: the velocity gradient with the stress and energy
+/// rates, and the momentum (stress divergence + artificial viscosity + artificial stress) with the local time-step
+/// limit. Both halves read only the pre-step state, so they share each neighbour's loads.
+SCL_FN void interactBody(u32 i, Particles b, Grid g, SCL_CONST const MatP* mats, SCL_DEV SCL_ATOMIC_U32* state,
+                         SCL_CONST const SimParams& P) {
     if (i >= g.start[P.gdim.w]) return;
     u32 f = b.flags[i];
     v4 z4 = mk4(0, 0, 0, 0);
     if ((f & F_ACTIVE) == 0u || (f & F_FIXED) != 0u) {
         b.r0[i] = z4; b.dS0[i] = z4; b.dS1[i] = z4; b.L0[i] = z4; b.L1[i] = z4; b.L2[i] = z4;
+        b.acc[i] = z4;
         return;
     }
     v4 p4 = b.pos[i]; v3 pi = xyz(p4); float hi = p4.w;
     v3 vi = xyz(b.vel[i]);
+    v4 si = b.st[i];
+    float ri = si.x, pri = si.z, ci = si.w;
+    float ri2 = 1.0f / (ri * ri);
+    v4 a0 = b.S0[i], c0 = b.S1[i];
+    // σ/ρ² rows for particle i
+    v3 Ti0 = mk3(a0.x - pri, a0.w, c0.x) * ri2, Ti1 = mk3(a0.w, a0.y - pri, c0.y) * ri2, Ti2 = mk3(c0.x, c0.y, a0.z - pri) * ri2;
+    bool solidI = (f & 255u) != 0u;
+    float Ri = (solidI && pri < 0.0f) ? 0.3f * (-pri) * ri2 : 0.0f;
     // rows: L_a = (∂v_a/∂x, ∂v_a/∂y, ∂v_a/∂z)
     v3 La = mk3(0, 0, 0), Lb = mk3(0, 0, 0), Lc = mk3(0, 0, 0);
+    v3 ai = mk3(0, 0, 0); float heat = 0, mumax = 0;
     SCL_NEIGHBOURS_BEGIN
-        float Vj = b.vel[j].w / b.st[j].x;
-        v3 dv = xyz(b.vel[j]) - vi;
-        La = La + gw * (Vj * dv.x);
-        Lb = Lb + gw * (Vj * dv.y);
-        Lc = Lc + gw * (Vj * dv.z);
+        v4 vj4 = b.vel[j];
+        v4 sj = b.st[j];
+        float mj = vj4.w;
+        float rj = sj.x, prj = sj.z;
+        // velocity gradient
+        float Vj = mj / rj;
+        v3 dvj = xyz(vj4) - vi;
+        La = La + gw * (Vj * dvj.x);
+        Lb = Lb + gw * (Vj * dvj.y);
+        Lc = Lc + gw * (Vj * dvj.z);
+        // momentum
+        u32 fj = b.flags[j];
+        float rj2 = 1.0f / (rj * rj);
+        v4 a1 = b.S0[j], c1 = b.S1[j];
+        v3 T0 = Ti0 + mk3(a1.x - prj, a1.w, c1.x) * rj2;
+        v3 T1 = Ti1 + mk3(a1.w, a1.y - prj, c1.y) * rj2;
+        v3 T2 = Ti2 + mk3(c1.x, c1.y, a1.z - prj) * rj2;
+        v3 dv = vi - xyz(vj4);
+        float vr = dot3(dv, d);
+        float extra = 0.0f;
+        if (vr < 0.0f) {
+            float mu = hij * vr / (r2 + 0.01f * hij * hij);
+            float cb = 0.5f * (ci + sj.w), rb = 0.5f * (ri + rj);
+            float piv = (-1.0f * cb * mu + 2.0f * mu * mu) / rb;
+            extra += piv;
+            heat += 0.5f * mj * piv * dot3(dv, gw);
+            mumax = scl_fmax(mumax, -mu);
+        }
+        float Rj = ((fj & 255u) != 0u && prj < 0.0f) ? 0.3f * (-prj) * rj2 : 0.0f;
+        if (Ri + Rj > 0.0f) {
+            float fw = kW(r, hij) / kW(hij / 1.3f, hij);
+            float f2 = fw * fw;
+            extra += (Ri + Rj) * f2 * f2;
+        }
+        ai = ai + mk3(dot3(T0, gw), dot3(T1, gw), dot3(T2, gw)) * mj - gw * (mj * extra);
     SCL_NEIGHBOURS_END
+
+    // ---- rates
     b.L0[i] = mk4(La, 0); b.L1[i] = mk4(Lb, 0); b.L2[i] = mk4(Lc, 0);
     float exx = La.x, eyy = Lb.y, ezz = Lc.z;
     float exy = 0.5f * (La.y + Lb.x), exz = 0.5f * (La.z + Lc.x), eyz = 0.5f * (Lb.z + Lc.y);
     float wxy = 0.5f * (La.y - Lb.x), wxz = 0.5f * (La.z - Lc.x), wyz = 0.5f * (Lb.z - Lc.y);
     float div = exx + eyy + ezz;
-    v4 s = b.st[i];
-    float rho = s.x, pr = s.z;
+    float rho = ri, pr = pri;
     MatP m = mats[f & 255u];
-    v4 a = b.S0[i], c = b.S1[i];
-    float sxx = a.x, syy = a.y, szz = a.z, sxy = a.w, sxz = c.x, syz = c.y;
+    float sxx = a0.x, syy = a0.y, szz = a0.z, sxy = a0.w, sxz = c0.x, syz = c0.y;
     float de;
     if (m.kind == 1u && (f & F_DAMAGED) == 0u) {
         float g2 = 2.0f * m.G, d3 = div / 3.0f;
@@ -202,53 +246,8 @@ SCL_FN void ratesBody(u32 i, Particles b, Grid g, SCL_CONST const MatP* mats, SC
         de = -pr * div / rho;
     }
     b.r0[i] = mk4(-rho * div, de, 0, 0);
-}
 
-/// Momentum (stress divergence + artificial viscosity + artificial stress) and the local time-step limit.
-SCL_FN void forcesBody(u32 i, Particles b, Grid g, SCL_DEV SCL_ATOMIC_U32* state, SCL_CONST const SimParams& P) {
-    if (i >= g.start[P.gdim.w]) return;
-    u32 f = b.flags[i];
-    if ((f & F_ACTIVE) == 0u || (f & F_FIXED) != 0u) { b.acc[i] = mk4(0, 0, 0, 0); return; }
-    v4 p4 = b.pos[i]; v3 pi = xyz(p4); float hi = p4.w;
-    v3 vi = xyz(b.vel[i]);
-    v4 si = b.st[i];
-    float ri = si.x, pri = si.z, ci = si.w;
-    float ri2 = 1.0f / (ri * ri);
-    v4 a0 = b.S0[i], c0 = b.S1[i];
-    // σ/ρ² rows for particle i
-    v3 Ti0 = mk3(a0.x - pri, a0.w, c0.x) * ri2, Ti1 = mk3(a0.w, a0.y - pri, c0.y) * ri2, Ti2 = mk3(c0.x, c0.y, a0.z - pri) * ri2;
-    bool solidI = (f & 255u) != 0u;
-    float Ri = (solidI && pri < 0.0f) ? 0.3f * (-pri) * ri2 : 0.0f;
-    v3 ai = mk3(0, 0, 0); float heat = 0, mumax = 0;
-    SCL_NEIGHBOURS_BEGIN
-        u32 fj = b.flags[j];
-        v4 sj = b.st[j];
-        float rj = sj.x, prj = sj.z;
-        float rj2 = 1.0f / (rj * rj);
-        v4 a1 = b.S0[j], c1 = b.S1[j];
-        v3 T0 = Ti0 + mk3(a1.x - prj, a1.w, c1.x) * rj2;
-        v3 T1 = Ti1 + mk3(a1.w, a1.y - prj, c1.y) * rj2;
-        v3 T2 = Ti2 + mk3(c1.x, c1.y, a1.z - prj) * rj2;
-        v3 dv = vi - xyz(b.vel[j]);
-        float vr = dot3(dv, d);
-        float extra = 0.0f;
-        float mj = b.vel[j].w;
-        if (vr < 0.0f) {
-            float mu = hij * vr / (r2 + 0.01f * hij * hij);
-            float cb = 0.5f * (ci + sj.w), rb = 0.5f * (ri + rj);
-            float piv = (-1.0f * cb * mu + 2.0f * mu * mu) / rb;
-            extra += piv;
-            heat += 0.5f * mj * piv * dot3(dv, gw);
-            mumax = scl_fmax(mumax, -mu);
-        }
-        float Rj = ((fj & 255u) != 0u && prj < 0.0f) ? 0.3f * (-prj) * rj2 : 0.0f;
-        if (Ri + Rj > 0.0f) {
-            float fw = kW(r, hij) / kW(hij / 1.3f, hij);
-            float f2 = fw * fw;
-            extra += (Ri + Rj) * f2 * f2;
-        }
-        ai = ai + mk3(dot3(T0, gw), dot3(T1, gw), dot3(T2, gw)) * mj - gw * (mj * extra);
-    SCL_NEIGHBOURS_END
+    // ---- momentum and time step
     b.acc[i] = mk4(ai, heat);
     float am = len3(ai);
     float d1 = hi / (ci + 1.2f * (ci + 2.0f * mumax));

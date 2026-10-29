@@ -18,8 +18,7 @@ using namespace metal;
     Grid g; g.start = start;
 
 kernel void kEOS(PARTICLE_ARGS, uint i [[thread_position_in_grid]]) { MAKE_PARTICLES; (void)g; eosBody(i, b, mats, P); }
-kernel void kRates(PARTICLE_ARGS, uint i [[thread_position_in_grid]]) { MAKE_PARTICLES; ratesBody(i, b, g, mats, P); }
-kernel void kForces(PARTICLE_ARGS, uint i [[thread_position_in_grid]]) { MAKE_PARTICLES; forcesBody(i, b, g, state, P); }
+kernel void kInteract(PARTICLE_ARGS, uint i [[thread_position_in_grid]]) { MAKE_PARTICLES; interactBody(i, b, g, mats, state, P); }
 kernel void kIntegrate(PARTICLE_ARGS, uint i [[thread_position_in_grid]]) { MAKE_PARTICLES; (void)g; integrateBody(i, b, state, mats, P); }
 kernel void kSplit(PARTICLE_ARGS, uint i [[thread_position_in_grid]]) { MAKE_PARTICLES; (void)g; splitBody(i, b, state, P); }
 kernel void kPack(PARTICLE_ARGS, device FrameP* out [[buffer(21)]], uint i [[thread_position_in_grid]]) {
