@@ -56,8 +56,11 @@ So the three backends cannot drift apart: a physics fix is one edit.
 - Refinement: per-particle deformation gradient F (dF/dt = L·F); split at principal stretch 2 along that direction,
   mass- and momentum-conserving, F halved along the split.
 - Full 3D only (no symmetry): uniform grid, counting sort, particle data reordered into cell order every step.
-  Cells are half the largest interaction distance and the search covers ±2 cells, scanned as contiguous rows of
-  cells, so the small liner and jet particles check fewer far-away candidates; the neighbours found are the same.
+  Particles are grouped in up to 3 size levels (coarse, original liner size, three or more splits). Each pair of
+  levels is searched over ±2 cells sized for the coarser of the two: the dense grid (sorted by level, then cell;
+  rows of cells scanned as one range) when either is coarse, hashed grids for the finer pairs. Every particle within
+  reach is found, and the small jet particles no longer check thousands of out-of-reach candidates (0.8% of checks
+  were hits at 5 refinement levels with one grid).
   One pass per step over the neighbours computes both the rates and the forces (`interactBody`).
   Check solver changes with `scl_stephash` (fixed steps, one CPU thread, particle hash).
   Liner at fine spacing, explosive and target at 2× spacing.

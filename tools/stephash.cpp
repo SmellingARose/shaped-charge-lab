@@ -1,6 +1,6 @@
 // Determinism check for solver changes that must not alter results.
-//   scl_stephash [steps] [layers] [cpu|metal|hip] [split-free]
-// Runs the default charge for a fixed number of steps (CPU: one thread, so bit-reproducible), then prints the solver
+//   scl_stephash [steps] [layers] [cpu|metal|hip] [refinement levels] [cpu threads]
+// Runs the default charge for a fixed number of steps (CPU: one thread by default, so bit-reproducible), then prints the solver
 // state and an FNV-1a hash of every packed particle. Same hash before and after a change = identical physics.
 #include <cstdint>
 #include <cstdio>
@@ -17,7 +17,7 @@ int main(int argc, char** argv) {
     scl::Config cfg;
     cfg.layers = argc > 2 ? std::atoi(argv[2]) : 1;
     const std::string backend = argc > 3 ? argv[3] : "cpu";
-    if (argc > 4) cfg.jetRefinement = 0;   // no splitting: the only step whose order depends on thread timing
+    if (argc > 4) cfg.jetRefinement = std::atoi(argv[4]);
     scl::Geometry3D g = scl::buildGeometry(cfg);
     std::unique_ptr<scl::Solver> s;
 #if defined(SCL_WITH_METAL)
@@ -26,7 +26,7 @@ int main(int argc, char** argv) {
 #if !defined(__APPLE__)
     if (backend == "hip") s = scl::makeGpuPluginSolver(g, 0);
 #endif
-    if (!s) s = scl::makeCpuSolver(g, 1);
+    if (!s) s = scl::makeCpuSolver(g, argc > 5 ? std::atoi(argv[5]) : 1);
     const SimParams P = scl::makeSimParams(g);
     std::printf("%s, %zu particles, %d steps, grid %u×%u×%u cells of %.3f mm\n", s->device().name.c_str(), g.used, steps,
                 P.gdim.x, P.gdim.y, P.gdim.z, P.gmin.w);

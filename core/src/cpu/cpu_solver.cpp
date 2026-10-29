@@ -27,7 +27,11 @@ public:
         for (auto* v : {&pos2_, &vel2_, &st2_, &S02_, &S12_, &aux2_, &G02_, &G12_, &G22_}) alloc(*v);
         flags_.assign(n_, 0); flags2_.assign(n_, 0);
         cellOf_.assign(n_, 0); rank_.assign(n_, 0); sorted_.assign(n_, 0);
-        cnt_.assign(size_t(P_.gdim.w) + SCL_EXTRA_BUCKETS, 0); start_.assign(size_t(P_.gdim.w) + SCL_EXTRA_BUCKETS + 1, 0);
+        cnt_.assign(size_t(denseCells(P_)) + SCL_EXTRA_BUCKETS, 0); start_.assign(size_t(denseCells(P_)) + SCL_EXTRA_BUCKETS + 1, 0);
+        const size_t tableLen = size_t(P_.lev.y) + 2;   // buckets, the non-member bucket, total
+        hcnt_.assign(tableLen, 0);
+        hstart_.assign(std::max<size_t>(hashGridCount(P_), 1) * tableLen, 0);
+        hslot_.assign(std::max<size_t>(hashGridCount(P_), 1) * n_, 0);
         for (size_t i = 0; i < n_; i++) {
             pos_[i] = mk4(g.pos[i][0], g.pos[i][1], g.pos[i][2], g.pos[i][3]);
             vel_[i] = mk4(g.vel[i][0], g.vel[i][1], g.vel[i][2], g.vel[i][3]);
@@ -110,25 +114,49 @@ private:
     }
 
     void buildGrid() {
-        const size_t ncells = P_.gdim.w;
+        const size_t ncells = denseCells(P_);
         Particles b = bufs();
-        each(n_, [&](u32 i) { cellOf_[i] = particleCell(i, b, P_); });
+        // only the used slots: the free ones above S_USED never hold data until splitting fills them
+        const u32 used = state_[S_USED];
+        each(used, [&](u32 i) { cellOf_[i] = particleCell(i, b, P_); });
         // Serial counting sort: measured faster than an atomic parallel count, because many particles
         // share each cell and the counters thrash between cores.
         std::fill(cnt_.begin(), cnt_.end(), 0u);
-        for (size_t i = 0; i < n_; i++) rank_[i] = cnt_[cellOf_[i]]++;   // then the dormant and free buckets
+        for (size_t i = 0; i < used; i++) rank_[i] = cnt_[cellOf_[i]]++;   // then the dormant bucket
         u32 acc = 0;
         for (size_t c = 0; c < ncells + SCL_EXTRA_BUCKETS; c++) { start_[c] = acc; acc += cnt_[c]; }
         start_[ncells + SCL_EXTRA_BUCKETS] = acc;
-        each(n_, [&](u32 i) { sorted_[start_[cellOf_[i]] + rank_[i]] = i; });
+        each(used, [&](u32 i) { sorted_[start_[cellOf_[i]] + rank_[i]] = i; });
         // permute persistent arrays into cell order
-        each(n_, [&](u32 k) {
+        each(used, [&](u32 k) {
             const u32 j = sorted_[k];
             pos2_[k] = pos_[j]; vel2_[k] = vel_[j]; st2_[k] = st_[j]; S02_[k] = S0_[j]; S12_[k] = S1_[j];
             aux2_[k] = aux_[j]; flags2_[k] = flags_[j]; G02_[k] = G0_[j]; G12_[k] = G1_[j]; G22_[k] = G2_[j];
         });
         pos_.swap(pos2_); vel_.swap(vel2_); st_.swap(st2_); S0_.swap(S02_); S1_.swap(S12_);
         aux_.swap(aux2_); flags_.swap(flags2_); G0_.swap(G02_); G1_.swap(G12_); G2_.swap(G22_);
+        buildHashGrids();
+    }
+
+    // Hashed grids of the finer levels (see the neighbour search in sph.h): a counting sort of the live slots of each
+    // level by hash bucket, on the cells of each coarser-or-equal level from 1 up.
+    void buildHashGrids() {
+        Particles b = bufs();
+        const u32 live = start_[denseCells(P_)];
+        const size_t tableLen = size_t(P_.lev.y) + 2;
+        for (u32 level = 1; level < P_.lev.x; level++)
+            for (u32 m = 1; m <= level; m++) {
+                const u32 hg = hashGrid(level, m);
+                u32* hs = hstart_.data() + size_t(hg) * tableLen;
+                u32* sl = hslot_.data() + size_t(hg) * n_;
+                each(live, [&](u32 i) { cellOf_[i] = hashBucket(i, b, level, m, P_); });
+                std::fill(hcnt_.begin(), hcnt_.end(), 0u);
+                for (u32 i = 0; i < live; i++) rank_[i] = hcnt_[cellOf_[i]]++;
+                u32 acc = 0;
+                for (size_t c = 0; c + 1 < tableLen; c++) { hs[c] = acc; acc += hcnt_[c]; }
+                hs[tableLen - 1] = acc;
+                each(live, [&](u32 i) { if (cellOf_[i] <= P_.lev.y) sl[hs[cellOf_[i]] + rank_[i]] = i; });
+            }
     }
 
     void stepOnce() {
@@ -137,8 +165,8 @@ private:
         buildGrid();
         auto t1 = clk::now();
         Particles b = bufs();
-        Grid g{start_.data()};
-        const size_t live = start_[P_.gdim.w];
+        Grid g{start_.data(), hstart_.data(), hslot_.data()};
+        const size_t live = liveCount(g, P_);
         each(n_, [&](u32 i) { eosBody(i, b, mats_, P_); });
         auto t2 = clk::now();
         each(live, [&](u32 i) { interactBody(i, b, g, mats_, state_, P_); });
@@ -167,7 +195,7 @@ private:
     u32 state_[S_COUNT];
     std::vector<v4> pos_, vel_, st_, S0_, S1_, aux_, G0_, G1_, G2_, L0_, L1_, L2_, acc_, r0_, dS0_, dS1_;
     std::vector<v4> pos2_, vel2_, st2_, S02_, S12_, aux2_, G02_, G12_, G22_;
-    std::vector<u32> flags_, flags2_, cellOf_, rank_, sorted_, cnt_, start_;
+    std::vector<u32> flags_, flags2_, cellOf_, rank_, sorted_, cnt_, start_, hcnt_, hstart_, hslot_;
     ThreadPool pool_;
     int threads_;
     int stepCounter_ = 0;

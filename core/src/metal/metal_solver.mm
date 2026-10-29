@@ -98,7 +98,8 @@ private:
         id<MTLLibrary> lib = [dev newLibraryWithSource:[NSString stringWithUTF8String:kMetalSource] options:opts error:&err];
         if (!lib) { NSLog(@"Metal compile failed: %@", err); return; }
         for (NSString* name in @[@"kEOS", @"kInteract", @"kIntegrate", @"kSplit", @"kPack", @"kFinalizeDt", @"kAdvance",
-                                 @"gClear", @"gAssign", @"gScan", @"gAddSums", @"gScatter", @"gPermute"]) {
+                                 @"gClear", @"gAssign", @"gScan", @"gAddSums", @"gScatter", @"gPermute",
+                                 @"hClear", @"hAssign", @"hScatter"]) {
             id<MTLFunction> fn = [lib newFunctionWithName:name];
             id<MTLComputePipelineState> pso = [dev newComputePipelineStateWithFunction:fn error:&err];
             if (!pso) { NSLog(@"Metal pipeline %@ failed: %@", name, err); return; }
@@ -110,11 +111,15 @@ private:
                               "pos2", "vel2", "st2", "S02", "S12", "aux2", "G02", "G12", "G22"})
             buf_[k] = make(f4);
         buf_["flags"] = make(n_ * 4); buf_["flags2"] = make(n_ * 4);
+        std::memset([buf_["flags2"] contents], 0, n_ * 4);   // slots never written stay free in both buffers
         cellOf_ = make(n_ * 4); rank_ = make(n_ * 4); sorted_ = make(n_ * 4);
-        const size_t nc1 = size_t(P_.gdim.w) + SCL_EXTRA_BUCKETS;   // cells, then the dormant and free buckets
+        const size_t nc1 = size_t(denseCells(P_)) + SCL_EXTRA_BUCKETS;   // level grids, then the dormant and free buckets
         cnt_ = make(nc1 * 4); start_ = make((nc1 + 1) * 4);
-        // block sums per scan level, down to a single block
-        for (size_t len = nc1, level = 0; level < kScanLevels; level++) {
+        tableLen_ = size_t(P_.lev.y) + 2;
+        const size_t grids = std::max<size_t>(hashGridCount(P_), 1);
+        hcnt_ = make(tableLen_ * 4); hstart_ = make(grids * tableLen_ * 4); hslot_ = make(grids * n_ * 4);
+        // block sums per scan level, down to a single block (sized for the longer of the two scans)
+        for (size_t len = std::max(nc1, tableLen_), level = 0; level < kScanLevels; level++) {
             const size_t blocks = (len + 1023) / 1024;
             sums_[level] = make(blocks * 4); sumsScanned_[level] = make(blocks * 4);
             if (blocks == 1) break;
@@ -160,6 +165,8 @@ private:
         [e setBuffer:state_ offset:0 atIndex:18];
         [e setBuffer:mats_ offset:0 atIndex:19];
         [e setBytes:&P_ length:sizeof(P_) atIndex:20];
+        [e setBuffer:hstart_ offset:0 atIndex:22];
+        [e setBuffer:hslot_ offset:0 atIndex:23];
     }
 
     void dispatchParticles(id<MTLComputeCommandEncoder> e, const char* name, size_t count) {
@@ -168,16 +175,16 @@ private:
     }
 
     // Exclusive scan of any length up to 1024^kScanLevels: scan 1024-blocks, scan their sums (recursively), add back.
-    void scan(id<MTLComputeCommandEncoder> e, id<MTLBuffer> in, id<MTLBuffer> out, u32 len, int level) {
+    void scan(id<MTLComputeCommandEncoder> e, id<MTLBuffer> in, id<MTLBuffer> out, u32 len, int level, NSUInteger outOffset = 0) {
         const NSUInteger blocks = (len + 1023) / 1024;
         [e setComputePipelineState:pso_["gScan"]];
-        [e setBuffer:in offset:0 atIndex:0]; [e setBuffer:out offset:0 atIndex:1]; [e setBuffer:sums_[level] offset:0 atIndex:2];
+        [e setBuffer:in offset:0 atIndex:0]; [e setBuffer:out offset:outOffset atIndex:1]; [e setBuffer:sums_[level] offset:0 atIndex:2];
         [e setBytes:&len length:4 atIndex:3];
         [e dispatchThreadgroups:MTLSizeMake(blocks, 1, 1) threadsPerThreadgroup:MTLSizeMake(1024, 1, 1)];
         if (blocks == 1) return;
         scan(e, sums_[level], sumsScanned_[level], u32(blocks), level + 1);
         [e setComputePipelineState:pso_["gAddSums"]];
-        [e setBuffer:out offset:0 atIndex:0]; [e setBuffer:sumsScanned_[level] offset:0 atIndex:1];
+        [e setBuffer:out offset:outOffset atIndex:0]; [e setBuffer:sumsScanned_[level] offset:0 atIndex:1];
         [e setBytes:&len length:4 atIndex:2];
         [e dispatchThreadgroups:MTLSizeMake(blocks, 1, 1) threadsPerThreadgroup:MTLSizeMake(1024, 1, 1)];
     }
@@ -185,14 +192,15 @@ private:
     void encodeStep(id<MTLComputeCommandEncoder> e) {
         // grid
         [e setBuffer:cnt_ offset:0 atIndex:0]; [e setBytes:&P_ length:sizeof(P_) atIndex:1];
-        run(e, "gClear", size_t(P_.gdim.w) + SCL_EXTRA_BUCKETS);
+        run(e, "gClear", size_t(denseCells(P_)) + SCL_EXTRA_BUCKETS);
         [e setBuffer:buf_["pos"] offset:0 atIndex:0]; [e setBuffer:buf_["flags"] offset:0 atIndex:1];
         [e setBuffer:cellOf_ offset:0 atIndex:2]; [e setBuffer:rank_ offset:0 atIndex:3]; [e setBuffer:cnt_ offset:0 atIndex:4];
-        [e setBytes:&P_ length:sizeof(P_) atIndex:5];
+        [e setBytes:&P_ length:sizeof(P_) atIndex:5]; [e setBuffer:state_ offset:0 atIndex:6];
         run(e, "gAssign", n_);
-        scan(e, cnt_, start_, u32(P_.gdim.w) + SCL_EXTRA_BUCKETS, 0);
+        scan(e, cnt_, start_, u32(denseCells(P_)) + SCL_EXTRA_BUCKETS, 0);
         [e setBuffer:cellOf_ offset:0 atIndex:0]; [e setBuffer:rank_ offset:0 atIndex:1]; [e setBuffer:start_ offset:0 atIndex:2];
         [e setBuffer:sorted_ offset:0 atIndex:3]; [e setBytes:&P_ length:sizeof(P_) atIndex:4];
+        [e setBuffer:state_ offset:0 atIndex:5];
         run(e, "gScatter", n_);
         static const char* persist[] = {"pos", "vel", "st", "S0", "S1", "aux", "flags", "G0", "G1", "G2"};
         for (int k = 0; k < 10; k++) {
@@ -200,8 +208,27 @@ private:
             [e setBuffer:buf_[std::string(persist[k]) + "2"] offset:0 atIndex:10 + k];
         }
         [e setBuffer:sorted_ offset:0 atIndex:20]; [e setBytes:&P_ length:sizeof(P_) atIndex:21];
+        [e setBuffer:state_ offset:0 atIndex:22];
         run(e, "gPermute", n_);
         for (int k = 0; k < 10; k++) std::swap(buf_[persist[k]], buf_[std::string(persist[k]) + "2"]);
+        // hashed grids of the finer levels (see the neighbour search in sph.h)
+        for (u32 level = 1; level < P_.lev.x; level++)
+            for (u32 m = 1; m <= level; m++) {
+                const NSUInteger hg = hashGrid(level, m);
+                const u32 lm[2] = {level, m};
+                [e setBuffer:hcnt_ offset:0 atIndex:0]; [e setBytes:&P_ length:sizeof(P_) atIndex:1];
+                run(e, "hClear", tableLen_);
+                [e setBuffer:buf_["pos"] offset:0 atIndex:0]; [e setBuffer:buf_["flags"] offset:0 atIndex:1];
+                [e setBuffer:cellOf_ offset:0 atIndex:2]; [e setBuffer:rank_ offset:0 atIndex:3]; [e setBuffer:hcnt_ offset:0 atIndex:4];
+                [e setBytes:&P_ length:sizeof(P_) atIndex:5]; [e setBytes:lm length:sizeof(lm) atIndex:6];
+                [e setBuffer:start_ offset:0 atIndex:7];
+                run(e, "hAssign", n_);
+                scan(e, hcnt_, hstart_, u32(tableLen_), 0, hg * tableLen_ * 4);
+                [e setBuffer:cellOf_ offset:0 atIndex:0]; [e setBuffer:rank_ offset:0 atIndex:1];
+                [e setBuffer:hstart_ offset:hg * tableLen_ * 4 atIndex:2]; [e setBuffer:hslot_ offset:hg * n_ * 4 atIndex:3];
+                [e setBuffer:start_ offset:0 atIndex:4]; [e setBytes:&P_ length:sizeof(P_) atIndex:5];
+                run(e, "hScatter", n_);
+            }
         // physics
         dispatchParticles(e, "kEOS", n_);
         dispatchParticles(e, "kInteract", n_);
@@ -219,7 +246,8 @@ private:
     id<MTLCommandQueue> queue_;
     std::map<std::string, id<MTLComputePipelineState>> pso_;
     std::map<std::string, id<MTLBuffer>> buf_;
-    id<MTLBuffer> cellOf_, rank_, sorted_, cnt_, start_, state_, mats_, frame_;
+    id<MTLBuffer> cellOf_, rank_, sorted_, cnt_, start_, state_, mats_, frame_, hcnt_, hstart_, hslot_;
+    size_t tableLen_ = 0;
     static constexpr int kScanLevels = 3;   // 1024³ cells
     id<MTLBuffer> sums_[kScanLevels] = {}, sumsScanned_[kScanLevels] = {};
     Device dev_;

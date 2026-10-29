@@ -24,6 +24,8 @@ struct SimParams {
     u4 cnt;       // slot capacity, max split generations
     v4 quant;     // frame quantisation origin xyz, xy span
     v4 quant2;    // z span, core radius for the jet tip
+    u4 lev;       // size levels L, hash table mask, -, -
+    v4 lvh;       // largest h of level 0 (with slack), cell sizes of levels 1 and 2, -
 };
 
 // state words
@@ -62,7 +64,9 @@ struct Particles {
 };
 
 struct Grid {
-    SCL_DEV u32* start;     // ncells + 1 offsets into cell-ordered particles
+    SCL_DEV u32* start;     // L·ncells + 3 offsets into the particles, sorted by (level, cell); see particleCell
+    SCL_DEV u32* hstart;    // per hashed grid (see hashGrid): mask + 2 offsets into hslot, by hash bucket
+    SCL_DEV u32* hslot;     // per hashed grid: capacity slots, sorted by hash bucket
 };
 
 // ---------------------------------------------------------------- kernels
@@ -87,48 +91,103 @@ SCL_FN bool cellInGrid(int cx, int cy, int cz, SCL_CONST const SimParams& P) {
 SCL_FN u32 cellIndex(int cx, int cy, int cz, SCL_CONST const SimParams& P) {
     return (u32(cz) * P.gdim.y + u32(cy)) * P.gdim.x + u32(cx);
 }
-// Slots that are in no cell sort into two buckets after the cells, in this order:
-//   ncells      dormant: real particles outside the grid (the target asleep until the jet arrives, vented ones)
-//   ncells + 1  free: slots never used yet (spares for refinement)
-// so after every sort the free slots start exactly at S_USED, where splitting takes its new slots.
-#define SCL_EXTRA_BUCKETS 2u
-
-/// Cell of a particle, or one of the two buckets after the cells when it is not live (outside the box: vented).
-SCL_FN u32 particleCell(u32 i, Particles b, SCL_CONST const SimParams& P) {
-    u32 f = b.flags[i];
-    if ((f & F_ACTIVE) == 0u) return (f & (F_SLEEP | F_VENTED)) != 0u ? P.gdim.w : P.gdim.w + 1u;
-    v4 p = b.pos[i];
-    int cx = cellCoord(p.x, P.gmin.x, P.gmin.w), cy = cellCoord(p.y, P.gmin.y, P.gmin.w), cz = cellCoord(p.z, P.gmin.z, P.gmin.w);
-    if (!cellInGrid(cx, cy, cz, P)) { b.flags[i] = (f & ~F_ACTIVE) | F_VENTED; return P.gdim.w; }
-    return cellIndex(cx, cy, cz, P);
-}
-
-// Cells are 1/SCL_CELL_REACH of the largest interaction distance (2 × the coarse smoothing length), and the neighbour
-// loop covers SCL_CELL_REACH cells each way, so every particle within reach is found. Smaller cells than the reach
-// mean fewer far-away candidates checked for the small liner and jet particles; the neighbours found are the same.
+// ---------------------------------------------------------------- neighbour search
+// Particles come in up to SCL_MAX_LEVELS size levels: level k holds smoothing lengths up to h0·2^-k (h0 = the coarse h,
+// lvh.x, which includes a 0.1% slack), the last level everything smaller. Splitting jet particles shrink, so a single
+// grid sized for the coarse particles makes the small ones check thousands of out-of-reach candidates in the dense jet.
+// Instead each pair of levels (a, b) is searched on cells of the coarser of the two, cs = 2·h0·2^-min(a,b) /
+// SCL_CELL_REACH, over SCL_CELL_REACH cells each way: hi + hj ≤ 2·h0·2^-min(a,b) for any such pair, so every particle
+// within reach is found, and the cells match the particles being looked for.
+//   min(a,b) = 0: the dense grid. Particles are sorted by (level, cell), so each level is a contiguous grid and each row
+//                 of cells along x is one range of slots.
+//   min(a,b) ≥ 1: hashed grids (memory only where the fine particles are), one per (level, cell level) pair with
+//                 1 ≤ cell level ≤ level; entries in a bucket from other cells are skipped.
+#define SCL_MAX_LEVELS 3u
 #define SCL_CELL_REACH 2
 
-// Neighbour loop over the surrounding (2·SCL_CELL_REACH + 1)³ cells. Particles are stored in cell order and cells along
-// x are consecutive, so each row of cells is one contiguous range of slots (j = slot).
+SCL_FN u32 levelOf(float h, SCL_CONST const SimParams& P) {
+    u32 k = 0;
+    float t = 0.5f * P.lvh.x;
+    while (k + 1u < P.lev.x && h <= t) { k++; t *= 0.5f; }
+    return k;
+}
+SCL_FN float levelCell(u32 m, SCL_CONST const SimParams& P) { return m == 0u ? P.gmin.w : (m == 1u ? P.lvh.y : P.lvh.z); }
+/// Hashed grid of the level-`level` particles on cells of level `m` (1 ≤ m ≤ level < L).
+SCL_HD u32 hashGrid(u32 level, u32 m) { return (level - 1u) * level / 2u + (m - 1u); }
+SCL_HD u32 hashGridCount(SCL_CONST const SimParams& P) { return (P.lev.x - 1u) * P.lev.x / 2u; }
+SCL_FN u32 cellHash(int cx, int cy, int cz, u32 mask) {
+    return ((u32(cx) * 73856093u) ^ (u32(cy) * 19349663u) ^ (u32(cz) * 83492791u)) & mask;
+}
+
+// Slots that are in no cell sort into two buckets after the level grids, in this order:
+//   L·ncells      dormant: real particles outside the grid (the target asleep until the jet arrives, vented ones)
+//   L·ncells + 1  free: slots never used yet (spares for refinement)
+// so after every sort the free slots start exactly at S_USED, where splitting takes its new slots.
+#define SCL_EXTRA_BUCKETS 2u
+SCL_HD u32 denseCells(SCL_CONST const SimParams& P) { return P.lev.x * P.gdim.w; }
+SCL_FN u32 liveCount(Grid g, SCL_CONST const SimParams& P) { return g.start[denseCells(P)]; }
+
+/// Dense bucket of a particle: level·ncells + cell, or one of the two buckets after the grids when it is not live
+/// (outside the box: vented).
+SCL_FN u32 particleCell(u32 i, Particles b, SCL_CONST const SimParams& P) {
+    u32 f = b.flags[i];
+    if ((f & F_ACTIVE) == 0u) return (f & (F_SLEEP | F_VENTED)) != 0u ? denseCells(P) : denseCells(P) + 1u;
+    v4 p = b.pos[i];
+    int cx = cellCoord(p.x, P.gmin.x, P.gmin.w), cy = cellCoord(p.y, P.gmin.y, P.gmin.w), cz = cellCoord(p.z, P.gmin.z, P.gmin.w);
+    if (!cellInGrid(cx, cy, cz, P)) { b.flags[i] = (f & ~F_ACTIVE) | F_VENTED; return denseCells(P); }
+    return levelOf(p.w, P) * P.gdim.w + cellIndex(cx, cy, cz, P);
+}
+
+/// Hash bucket of slot i in hashed grid (level, m), or mask + 1 when the slot is not a live particle of that level.
+SCL_FN u32 hashBucket(u32 i, Particles b, u32 level, u32 m, SCL_CONST const SimParams& P) {
+    if ((b.flags[i] & F_ACTIVE) == 0u) return P.lev.y + 1u;
+    v4 p = b.pos[i];
+    if (levelOf(p.w, P) != level) return P.lev.y + 1u;
+    float cs = levelCell(m, P);
+    return cellHash(cellCoord(p.x, P.gmin.x, cs), cellCoord(p.y, P.gmin.y, cs), cellCoord(p.z, P.gmin.z, cs), P.lev.y);
+}
+
+// Neighbour loop: for every level, the (2·SCL_CELL_REACH + 1)³ cells around particle i on the cells of the coarser of
+// the two levels. Dense rows are scanned as one slot range; hashed cells one bucket at a time (j = slot either way).
 #define SCL_NEIGHBOURS_BEGIN \
-    int cbx = cellCoord(pi.x, P.gmin.x, P.gmin.w), cby = cellCoord(pi.y, P.gmin.y, P.gmin.w), cbz = cellCoord(pi.z, P.gmin.z, P.gmin.w); \
-    int cx0 = cbx - SCL_CELL_REACH > 0 ? cbx - SCL_CELL_REACH : 0; \
-    int cx1 = cbx + SCL_CELL_REACH < int(P.gdim.x) - 1 ? cbx + SCL_CELL_REACH : int(P.gdim.x) - 1; \
-    for (int dz = -SCL_CELL_REACH; dz <= SCL_CELL_REACH; dz++) \
-    for (int dy = -SCL_CELL_REACH; dy <= SCL_CELL_REACH; dy++) { \
-        if (!cellInGrid(cx0, cby + dy, cbz + dz, P)) continue; \
-        u32 q1 = g.start[cellIndex(cx1, cby + dy, cbz + dz, P) + 1]; \
-        for (u32 j = g.start[cellIndex(cx0, cby + dy, cbz + dz, P)]; j < q1; j++) { \
-            if (j == i) continue; \
-            v4 pj4 = b.pos[j]; \
-            v3 d = pi - xyz(pj4); \
-            float r2 = dot3(d, d); \
-            float sup = hi + pj4.w; \
-            if (r2 >= sup * sup) continue; \
-            float r = scl_fmax(scl_sqrt(r2), 1e-7f); \
-            float hij = 0.5f * (hi + pj4.w); \
-            v3 gw = d * (kDW(r, hij) / r);
-#define SCL_NEIGHBOURS_END }}
+    const u32 lvi = levelOf(hi, P); \
+    for (u32 lj = 0; lj < P.lev.x; lj++) { \
+        const u32 m = lj < lvi ? lj : lvi; \
+        const float cs = levelCell(m, P); \
+        const bool hashed = m != 0u; \
+        const u32 hg = hashed ? hashGrid(lj, m) : 0u; \
+        SCL_DEV const u32* hs = g.hstart + hg * (P.lev.y + 2u); \
+        SCL_DEV const u32* sl = g.hslot + hg * P.cnt.x; \
+        const int cbx = cellCoord(pi.x, P.gmin.x, cs), cby = cellCoord(pi.y, P.gmin.y, cs), cbz = cellCoord(pi.z, P.gmin.z, cs); \
+        const int cx0 = cbx - SCL_CELL_REACH > 0 ? cbx - SCL_CELL_REACH : 0; \
+        const int cx1 = cbx + SCL_CELL_REACH < int(P.gdim.x) - 1 ? cbx + SCL_CELL_REACH : int(P.gdim.x) - 1; \
+        for (int dz = -SCL_CELL_REACH; dz <= SCL_CELL_REACH; dz++) \
+        for (int dy = -SCL_CELL_REACH; dy <= SCL_CELL_REACH; dy++) { \
+            if (!hashed && !cellInGrid(cx0, cby + dy, cbz + dz, P)) continue; \
+            for (int ix = 0; ix < (hashed ? 2 * SCL_CELL_REACH + 1 : 1); ix++) { \
+                const int wx = cbx - SCL_CELL_REACH + ix; \
+                u32 q0, q1; \
+                if (hashed) { \
+                    const u32 hb = cellHash(wx, cby + dy, cbz + dz, P.lev.y); \
+                    q0 = hs[hb]; q1 = hs[hb + 1u]; \
+                } else { \
+                    q0 = g.start[lj * P.gdim.w + cellIndex(cx0, cby + dy, cbz + dz, P)]; \
+                    q1 = g.start[lj * P.gdim.w + cellIndex(cx1, cby + dy, cbz + dz, P) + 1u]; \
+                } \
+                for (u32 q = q0; q < q1; q++) { \
+                    const u32 j = hashed ? sl[q] : q; \
+                    if (j == i) continue; \
+                    v4 pj4 = b.pos[j]; \
+                    if (hashed && (cellCoord(pj4.x, P.gmin.x, cs) != wx || cellCoord(pj4.y, P.gmin.y, cs) != cby + dy || \
+                                   cellCoord(pj4.z, P.gmin.z, cs) != cbz + dz)) continue; \
+                    v3 d = pi - xyz(pj4); \
+                    float r2 = dot3(d, d); \
+                    float sup = hi + pj4.w; \
+                    if (r2 >= sup * sup) continue; \
+                    float r = scl_fmax(scl_sqrt(r2), 1e-7f); \
+                    float hij = 0.5f * (hi + pj4.w); \
+                    v3 gw = d * (kDW(r, hij) / r);
+#define SCL_NEIGHBOURS_END }}}}
 
 struct PC { float p, c; };
 
@@ -174,7 +233,7 @@ SCL_FN void eosBody(u32 i, Particles b, SCL_CONST const MatP* mats, SCL_CONST co
 /// limit. Both halves read only the pre-step state, so they share each neighbour's loads.
 SCL_FN void interactBody(u32 i, Particles b, Grid g, SCL_CONST const MatP* mats, SCL_DEV SCL_ATOMIC_U32* state,
                          SCL_CONST const SimParams& P) {
-    if (i >= g.start[P.gdim.w]) return;
+    if (i >= liveCount(g, P)) return;
     u32 f = b.flags[i];
     v4 z4 = mk4(0, 0, 0, 0);
     if ((f & F_ACTIVE) == 0u || (f & F_FIXED) != 0u) {

@@ -41,23 +41,37 @@ __global__ void kFinalizeDt(u32* state) { if (blockIdx.x == 0 && threadIdx.x == 
 __global__ void kAdvance(u32* state, SimParams P) { if (blockIdx.x == 0 && threadIdx.x == 0) advanceBody(state, P); }
 
 // ---- grid: counting sort into cell order
-__global__ void gClear(u32* cnt, SimParams P) {
+// ---- hashed grids of the finer levels (level `level` on the cells of level `m`): clear, bucket and rank, scatter
+__global__ void hAssign(Particles b, const u32* start, u32* bucketOf, u32* rank, u32* cnt, u32 level, u32 m, SimParams P) {
     u32 i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < P.gdim.w + SCL_EXTRA_BUCKETS) cnt[i] = 0;
+    if (i >= start[denseCells(P)]) return;   // live slots only
+    u32 c = hashBucket(i, b, level, m, P);
+    bucketOf[i] = c;
+    if (c <= P.lev.y) rank[i] = atomicAdd(&cnt[c], 1u);
 }
-__global__ void gAssign(Particles b, u32* cellOf, u32* rank, u32* cnt, SimParams P) {
+__global__ void hScatter(const u32* bucketOf, const u32* rank, const u32* hs, u32* sl, const u32* start, SimParams P) {
     u32 i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= P.cnt.x) return;
+    if (i >= start[denseCells(P)]) return;
+    u32 c = bucketOf[i];
+    if (c <= P.lev.y) sl[hs[c] + rank[i]] = i;
+}
+// The grid sort covers only the used slots: the free ones above S_USED never hold data until splitting fills them.
+__global__ void gAssign(Particles b, u32* cellOf, u32* rank, u32* cnt, const u32* state, SimParams P) {
+    u32 i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= state[S_USED]) return;
     u32 c = particleCell(i, b, P);
     cellOf[i] = c;
     rank[i] = atomicAdd(&cnt[c], 1u);
 }
-// Exclusive scan of up to 1024 elements per block (shared-memory Hillis–Steele; warp-size agnostic).
+// Exclusive scan of up to 4096 elements per block, 4 per thread (shared-memory Hillis–Steele over the thread totals;
+// warp-size agnostic).
+constexpr u32 kScanBlock = 4096;
 __global__ void gScan(const u32* in, u32* out, u32* sums, u32 len) {
     __shared__ u32 t[1024];
-    u32 tid = threadIdx.x, gid = blockIdx.x * 1024 + tid;
-    u32 v = gid < len ? in[gid] : 0u;
-    t[tid] = v;
+    const u32 tid = threadIdx.x, base = blockIdx.x * kScanBlock + tid * 4u;
+    u32 v[4], run = 0;
+    for (u32 k = 0; k < 4; k++) { v[k] = base + k < len ? in[base + k] : 0u; run += v[k]; }
+    t[tid] = run;
     __syncthreads();
     for (u32 off = 1; off < 1024; off <<= 1) {
         u32 add = tid >= off ? t[tid - off] : 0u;
@@ -65,22 +79,23 @@ __global__ void gScan(const u32* in, u32* out, u32* sums, u32 len) {
         t[tid] += add;
         __syncthreads();
     }
-    if (gid < len) out[gid] = t[tid] - v;
+    u32 acc = t[tid] - run;
+    for (u32 k = 0; k < 4; k++) { if (base + k < len) out[base + k] = acc; acc += v[k]; }
     if (tid == 1023) sums[blockIdx.x] = t[tid];
 }
 __global__ void gAddSums(u32* out, const u32* sums, u32 len) {
-    u32 gid = blockIdx.x * 1024 + threadIdx.x;
-    if (gid < len) out[gid] += sums[blockIdx.x];
+    const u32 base = blockIdx.x * kScanBlock + threadIdx.x * 4u, add = sums[blockIdx.x];
+    for (u32 k = 0; k < 4; k++) if (base + k < len) out[base + k] += add;
 }
-__global__ void gScatter(const u32* cellOf, const u32* rank, const u32* start, u32* sorted, SimParams P) {
+__global__ void gScatter(const u32* cellOf, const u32* rank, const u32* start, u32* sorted, const u32* state, SimParams P) {
     u32 i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= P.cnt.x) return;
+    if (i >= state[S_USED]) return;
     sorted[start[cellOf[i]] + rank[i]] = i;
 }
 struct Persist { v4 *pos, *vel, *st, *S0, *S1, *aux, *G0, *G1, *G2; u32* flags; };
-__global__ void gPermute(Persist a, Persist b, const u32* sorted, SimParams P) {
+__global__ void gPermute(Persist a, Persist b, const u32* sorted, const u32* state, SimParams P) {
     u32 k = blockIdx.x * blockDim.x + threadIdx.x;
-    if (k >= P.cnt.x) return;
+    if (k >= state[S_USED]) return;
     u32 j = sorted[k];
     b.pos[k] = a.pos[j]; b.vel[k] = a.vel[j]; b.st[k] = a.st[j]; b.S0[k] = a.S0[j]; b.S1[k] = a.S1[j];
     b.aux[k] = a.aux[j]; b.G0[k] = a.G0[j]; b.G1[k] = a.G1[j]; b.G2[k] = a.G2[j]; b.flags[k] = a.flags[j];
@@ -172,12 +187,15 @@ private:
         if (!alloc(L0_, n_) || !alloc(L1_, n_) || !alloc(L2_, n_) || !alloc(acc_, n_) || !alloc(r0_, n_) || !alloc(dS0_, n_) ||
             !alloc(dS1_, n_) || !alloc(cellOf_, n_) || !alloc(rank_, n_) || !alloc(sorted_, n_) || !alloc(frame_, n_))
             return false;
-        nbuckets_ = size_t(P_.gdim.w) + SCL_EXTRA_BUCKETS;
+        nbuckets_ = size_t(denseCells(P_)) + SCL_EXTRA_BUCKETS;   // level grids, then the dormant and free buckets
         if (!alloc(cnt_, nbuckets_) || !alloc(start_, nbuckets_ + 1) || !alloc(state_, S_COUNT) || !alloc(mats_, 3))
             return false;
+        tableLen_ = size_t(P_.lev.y) + 2;
+        const size_t grids = std::max<size_t>(hashGridCount(P_), 1);
+        if (!alloc(hcnt_, tableLen_) || !alloc(hstart_, grids * tableLen_) || !alloc(hslot_, grids * n_)) return false;
         // block sums per scan level, down to a single block
-        for (size_t len = nbuckets_, levels = 0; levels < kScanLevels; levels++) {
-            const size_t blocks = (len + 1023) / 1024;
+        for (size_t len = std::max(nbuckets_, tableLen_), levels = 0; levels < kScanLevels; levels++) {   // the longer scan
+            const size_t blocks = (len + kScanBlock - 1) / kScanBlock;
             if (!alloc(sums_[levels], blocks) || !alloc(sumsScanned_[levels], blocks)) return false;
             if (blocks == 1) break;
             len = blocks;
@@ -202,6 +220,7 @@ private:
         HIP_OK(hipMemcpy(cur_.G1, G1.data(), f4, hipMemcpyHostToDevice));
         HIP_OK(hipMemcpy(cur_.G2, G2.data(), f4, hipMemcpyHostToDevice));
         HIP_OK(hipMemcpy(cur_.flags, g.flags, n_ * sizeof(u32), hipMemcpyHostToDevice));
+        HIP_OK(hipMemset(alt_.flags, 0, n_ * sizeof(u32)));   // slots never written stay free in both buffers
         for (v4* p : {L0_, L1_, L2_, acc_, r0_, dS0_, dS1_}) HIP_OK(hipMemcpy(p, zero.data(), f4, hipMemcpyHostToDevice));
         HIP_OK(hipMemcpy(mats_, mats, sizeof(MatP) * 3, hipMemcpyHostToDevice));
         HIP_OK(hipMemcpy(state_, g.state, sizeof(u32) * S_COUNT, hipMemcpyHostToDevice));
@@ -219,9 +238,9 @@ private:
         return b;
     }
 
-    // Exclusive scan of any length up to 1024^kScanLevels: scan 1024-blocks, scan their sums (recursively), add back.
+    // Exclusive scan of any length up to 4096^kScanLevels: scan 4096-blocks, scan their sums (recursively), add back.
     void scan(const u32* in, u32* out, u32 len, int level) {
-        const unsigned blocks = (len + 1023) / 1024;
+        const unsigned blocks = (len + kScanBlock - 1) / kScanBlock;
         gScan<<<blocks, 1024>>>(in, out, sums_[level], len);
         if (blocks == 1) return;
         scan(sums_[level], sumsScanned_[level], blocks, level + 1);
@@ -232,31 +251,43 @@ private:
         mark(0);
         const u32 len = u32(nbuckets_);
 
-        gClear<<<blocksFor(nbuckets_), TPB>>>(cnt_, P_);
-        gAssign<<<blocksFor(n_), TPB>>>(particles(), cellOf_, rank_, cnt_, P_);
-        scan(cnt_, start_, len, 0);
-        gScatter<<<blocksFor(n_), TPB>>>(cellOf_, rank_, start_, sorted_, P_);
-        gPermute<<<blocksFor(n_), TPB>>>(cur_, alt_, sorted_, P_);
-        std::swap(cur_, alt_);
+        hipMemsetAsync(cnt_, 0, nbuckets_ * sizeof(u32));
+        gAssign<<<blocksFor(n_), TPB>>>(particles(), cellOf_, rank_, cnt_, state_, P_);
         mark(1);
-        Particles b = particles();
-        Grid g{start_};
-        kEOS<<<blocksFor(n_), TPB>>>(b, mats_, P_);
+        scan(cnt_, start_, len, 0);
         mark(2);
-        kInteract<<<blocksFor(n_), TPB>>>(b, g, mats_, state_, P_);
+        gScatter<<<blocksFor(n_), TPB>>>(cellOf_, rank_, start_, sorted_, state_, P_);
+        gPermute<<<blocksFor(n_), TPB>>>(cur_, alt_, sorted_, state_, P_);
+        std::swap(cur_, alt_);
         mark(3);
+        // hashed grids of the finer levels (see the neighbour search in sph.h)
+        for (u32 level = 1; level < P_.lev.x; level++)
+            for (u32 m = 1; m <= level; m++) {
+                const size_t hg = hashGrid(level, m);
+                hipMemsetAsync(hcnt_, 0, tableLen_ * sizeof(u32));
+                hAssign<<<blocksFor(n_), TPB>>>(particles(), start_, cellOf_, rank_, hcnt_, level, m, P_);
+                scan(hcnt_, hstart_ + hg * tableLen_, u32(tableLen_), 0);
+                hScatter<<<blocksFor(n_), TPB>>>(cellOf_, rank_, hstart_ + hg * tableLen_, hslot_ + hg * n_, start_, P_);
+            }
+        mark(4);
+        Particles b = particles();
+        Grid g{start_, hstart_, hslot_};
+        kEOS<<<blocksFor(n_), TPB>>>(b, mats_, P_);
+        mark(5);
+        kInteract<<<blocksFor(n_), TPB>>>(b, g, mats_, state_, P_);
+        mark(6);
         kFinalizeDt<<<1, 1>>>(state_);
         kIntegrate<<<blocksFor(n_), TPB>>>(b, state_, mats_, P_);
         kAdvance<<<1, 1>>>(state_, P_);
-        mark(4);
+        mark(7);
         if (profile_) report();
     }
 
     // SCL_PROFILE=1: per-phase GPU times, averaged over 50 steps (synchronises every step, so only for measuring)
     void mark(int k) { if (profile_) hipEventRecord(prof_[k]); }
     void report() {
-        hipEventSynchronize(prof_[4]);
-        for (int k = 0; k < 4; k++) {
+        hipEventSynchronize(prof_[kMarks - 1]);
+        for (int k = 0; k + 1 < kMarks; k++) {
             float ms = 0;
             hipEventElapsedTime(&ms, prof_[k], prof_[k + 1]);
             profMs_[k] += ms;
@@ -264,18 +295,20 @@ private:
         if (++profSteps_ < 50) return;
         u32 used = 0;
         hipMemcpy(&used, state_ + S_USED, sizeof(u32), hipMemcpyDeviceToHost);
-        std::fprintf(stderr, "gpu profile ms/step: grid %.2f eos %.2f neighbours %.2f integrate %.2f (used %u of %zu)\n",
-                     profMs_[0] / 50, profMs_[1] / 50, profMs_[2] / 50, profMs_[3] / 50, used, n_);
+        std::fprintf(stderr, "gpu profile ms/step: count %.2f scan %.2f permute %.2f hash grids %.2f eos %.2f neighbours %.2f "
+                     "integrate %.2f (used %u of %zu)\n", profMs_[0] / 50, profMs_[1] / 50, profMs_[2] / 50, profMs_[3] / 50,
+                     profMs_[4] / 50, profMs_[5] / 50, profMs_[6] / 50, used, n_);
         profSteps_ = 0;
         for (double& v : profMs_) v = 0;
     }
 
     SimParams P_{};
-    size_t n_ = 0, nbuckets_ = 0;
+    size_t n_ = 0, nbuckets_ = 0, tableLen_ = 0;
     Persist cur_{}, alt_{};
     v4 *L0_ = nullptr, *L1_ = nullptr, *L2_ = nullptr, *acc_ = nullptr, *r0_ = nullptr, *dS0_ = nullptr, *dS1_ = nullptr;
     u32 *cellOf_ = nullptr, *rank_ = nullptr, *sorted_ = nullptr, *cnt_ = nullptr, *start_ = nullptr;
-    static constexpr int kScanLevels = 3;   // 1024³ cells
+    u32 *hcnt_ = nullptr, *hstart_ = nullptr, *hslot_ = nullptr;
+    static constexpr int kScanLevels = 3;   // 4096³ buckets
     u32* sums_[kScanLevels] = {};
     u32* sumsScanned_[kScanLevels] = {};
     u32* state_ = nullptr;
@@ -285,8 +318,9 @@ private:
     hipEvent_t ev0_ = nullptr, ev1_ = nullptr;
     int stepCounter_ = 0;
     bool profile_ = std::getenv("SCL_PROFILE") != nullptr;
-    hipEvent_t prof_[5] = {};
-    double profMs_[4] = {};
+    static constexpr int kMarks = 8;
+    hipEvent_t prof_[kMarks] = {};
+    double profMs_[kMarks - 1] = {};
     int profSteps_ = 0;
 };
 
