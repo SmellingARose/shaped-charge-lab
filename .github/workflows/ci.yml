@@ -70,8 +70,10 @@ jobs:
             $exe = "$env:RUNNER_TEMP\hip-sdk.exe"
             Invoke-WebRequest "https://download.amd.com/developer/eula/rocm-hub/AMD-Software-PRO-Edition-25.Q3-Win10-Win11-For-HIP.exe" -OutFile $exe
             New-Item -ItemType Directory -Force $dir | Out-Null
-            tar.exe -xf $exe -C $dir Packages/Apps/ROCmSDKPackages/SDKCore
+            # 7-Zip (on the runner image) reads AMD's self-extracting package; windows-2022's bsdtar does not
+            7z x -y "-o$dir" $exe Packages\Apps\ROCmSDKPackages\SDKCore | Select-Object -Last 3
             Remove-Item $exe
+            if (-not (Test-Path $msi)) { Write-Error "ROCm_SDK_Core.msi not found in the AMD package"; exit 1 }
           }
           $p = Start-Process msiexec -ArgumentList '/i', $msi, '/qn', '/l*v', "$env:RUNNER_TEMP\hip-sdk.log" -PassThru -Wait
           if ($p.ExitCode -ne 0) { Get-Content "$env:RUNNER_TEMP\hip-sdk.log" -Tail 40; exit $p.ExitCode }
