@@ -117,6 +117,40 @@ Rectangle {
                 }
             }
 
+            // ---- best standoff vs approach speed (the measured jet, shifted to each speed)
+            Rectangle {
+                width: parent.width
+                height: 238
+                radius: Theme.radius
+                color: Theme.card
+                border.color: Theme.hairline
+                Column {
+                    x: 14; y: 12; width: parent.width - 28
+                    spacing: 2
+                    Text { text: "Best standoff vs approach speed"; color: Theme.text; font.pixelSize: Theme.fontBody; font.weight: Font.DemiBold }
+                    Text {
+                        width: parent.width
+                        text: SimController.bestSummary.length ? SimController.bestSummary
+                              : "A moving charge adds its speed to the jet, so the jet stretches less before it arrives. Run once to measure it."
+                        wrapMode: Text.WordWrap
+                        color: Theme.textFaint; font.pixelSize: Theme.fontSmall
+                    }
+                }
+                PlotItem {
+                    x: 6; y: 66; width: parent.width - 12; height: parent.height - 72
+                    line: SimController.optimumVsSpeed
+                    highlight: SimController.bestNow
+                    highlightLabel: SimController.bestNow.x >= 0 ? SimController.bestNow.y.toFixed(1) + " CD" : ""
+                    ruleX: SimController.approachSpeed
+                    xMin: 0; xMax: 1000; yMin: 0; yMax: 6; autoY: true
+                    xLabel: "approach speed (m/s)"
+                    yLabel: "best standoff (CD)"
+                    lineColor: Theme.accent
+                    textColor: Theme.textFaint
+                    gridColor: Theme.hairline
+                }
+            }
+
             // ---- run diagnostics
             Rectangle {
                 width: parent.width

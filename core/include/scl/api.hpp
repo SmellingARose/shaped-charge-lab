@@ -127,6 +127,19 @@ struct CurvePoint { float standoffCD, penetrationCD; };
 /// 1D modified-Bernoulli penetration of the measured jet versus standoff.
 std::vector<CurvePoint> penetrationCurve(const JetProfile&, const Config&, float driftSpeedKmS, float maxCD = 10, float stepCD = 0.1f);
 
+/// Peak of a penetration curve, refined between its samples by a parabola through the best point and its neighbours.
+CurvePoint bestStandoff(const std::vector<CurvePoint>&);
+
+/// The same jet fired at another approach speed (m/s). Exact without air drag (Galilean shift): every element gains
+/// the speed difference and the virtual origin moves on with the charge; stretching and breakup times are unchanged.
+JetProfile atApproachSpeed(const JetProfile&, float measuredAtMS, float approachMS);
+
+struct OptimumPoint { float approachSpeed, standoffCD, penetrationCD; };
+
+/// Best standoff, and the depth it gives, at each approach speed from 0 to maxMS, from one measured jet.
+std::vector<OptimumPoint> optimumVsApproach(const JetProfile&, const Config&, float driftSpeedKmS, float measuredAtMS,
+                                            float maxMS = 1000, float stepMS = 25);
+
 struct JetSample { float zFromFace, vz; bool isJet; };
 
 // ---------------------------------------------------------------- simulation

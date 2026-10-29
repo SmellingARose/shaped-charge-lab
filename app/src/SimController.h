@@ -66,6 +66,10 @@ class SimController : public QObject {
     Q_PROPERTY(QPointF optimum READ optimum NOTIFY chartsChanged)
     Q_PROPERTY(QVariantList results READ results NOTIFY chartsChanged)
     Q_PROPERTY(double standoff READ standoff NOTIFY configChanged)
+    Q_PROPERTY(double approachSpeed READ approachSpeed NOTIFY configChanged)
+    Q_PROPERTY(QVariantList optimumVsSpeed READ optimumVsSpeed NOTIFY chartsChanged)   // (m/s, best standoff CD)
+    Q_PROPERTY(QPointF bestNow READ bestNow NOTIFY chartsChanged)                      // at the current approach speed
+    Q_PROPERTY(QString bestSummary READ bestSummary NOTIFY chartsChanged)
     Q_PROPERTY(QString jetSummary READ jetSummary NOTIFY chartsChanged)
 
 public:
@@ -116,6 +120,10 @@ public:
     QPointF optimum() const { return m_optimum; }
     QVariantList results() const { return m_results; }
     double standoff() const { return m_cfg.standoffCD; }
+    double approachSpeed() const { return m_cfg.approachSpeed; }
+    QVariantList optimumVsSpeed() const { return m_optimumVsSpeed; }
+    QPointF bestNow() const { return m_bestNow; }
+    QString bestSummary() const { return m_bestSummary; }
     QString jetSummary() const;
 
     Q_INVOKABLE void setParam(const QString& key, double value);
@@ -167,8 +175,10 @@ private:
 
     bool m_haveJet = false;
     scl::JetProfile m_jet{};
-    QVariantList m_jetSamples, m_curve, m_results;
-    QPointF m_optimum{-1, -1};
+    float m_jetApproach = 0;   // approach speed the jet was measured at (m/s); the charts shift it to the current one
+    QVariantList m_jetSamples, m_curve, m_results, m_optimumVsSpeed;
+    QPointF m_optimum{-1, -1}, m_bestNow{-1, -1};
+    QString m_bestSummary;
 
     mutable std::mutex m_frameMutex;
     std::shared_ptr<const ViewFrame> m_viewFrame;

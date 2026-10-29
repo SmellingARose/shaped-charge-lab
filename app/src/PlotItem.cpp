@@ -61,8 +61,12 @@ void PlotItem::paint(QPainter* p) {
         p->setPen(QPen(m_gridColor, 1));
     }
     p->setPen(m_textColor);
-    for (double v = std::ceil(x0 / xs) * xs; v <= x1 + 1e-9; v += xs)
-        p->drawText(QRectF(X(v) - 20, area.bottom() + 4, 40, 14), Qt::AlignHCenter | Qt::AlignTop, fmt(v, xs));
+    for (double v = std::ceil(x0 / xs) * xs; v <= x1 + 1e-9; v += xs) {
+        // centred under the tick; the last one is right-aligned to the item edge so wide labels are not cut off
+        const bool edge = X(v) + 20 > width();
+        const QRectF r = edge ? QRectF(width() - 40, area.bottom() + 4, 40, 14) : QRectF(X(v) - 20, area.bottom() + 4, 40, 14);
+        p->drawText(r, (edge ? Qt::AlignRight : Qt::AlignHCenter) | Qt::AlignTop, fmt(v, xs));
+    }
     if (!m_xLabel.isEmpty())   // inside the plot, just above the axis, so it never collides with tick labels
         p->drawText(QRectF(area.left(), area.bottom() - 16, area.width() - 2, 14), Qt::AlignRight | Qt::AlignBottom, m_xLabel);
     if (!m_yLabel.isEmpty()) p->drawText(QRectF(area.left() + 4, area.top(), 200, 14), Qt::AlignLeft | Qt::AlignTop, m_yLabel);

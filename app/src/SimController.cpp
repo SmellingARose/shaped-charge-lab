@@ -118,7 +118,11 @@ void SimController::setParam(const QString& k, double v) {
     if (k == "coneAngleDeg") c.coneAngleDeg = float(v);
     else if (k == "linerThicknessFrac") c.linerThicknessFrac = float(v);
     else if (k == "headHeightCD") c.headHeightCD = float(v);
-    else if (k == "approachSpeed") c.approachSpeed = float(v);
+    else if (k == "approachSpeed") {   // the same jet, shifted (exact without air drag); only 3D results are stale
+        c.approachSpeed = float(v);
+        chargeChanged = false;
+        m_results.clear();
+    }
     else if (k == "detonationVelocity") c.detonationVelocity = float(v);
     else if (k == "standoffCD") { c.standoffCD = float(v); chargeChanged = false; }
     else if (k == "targetThicknessCD") { c.targetThicknessCD = float(v); chargeChanged = false; }
@@ -293,6 +297,7 @@ void SimController::poll() {
     m_progress = m_stats.done ? 1.0 : std::min(0.98, m_stats.time / expected);
     if (!m_haveJet && m_run->jetProfile(m_jet)) {
         m_haveJet = true;
+        m_jetApproach = m_runCfg.approachSpeed;
         updateCurve();
     }
     QVariantList samples;
@@ -304,13 +309,36 @@ void SimController::poll() {
 
 void SimController::updateCurve() {
     m_curve.clear();
-    m_optimum = QPointF(-1, -1);
+    m_optimumVsSpeed.clear();
+    m_optimum = m_bestNow = QPointF(-1, -1);
+    m_bestSummary.clear();
     if (m_haveJet) {
-        const auto pts = scl::penetrationCurve(m_jet, m_cfg, m_driftSpeed / 1000.0f, 10, 0.1f);
-        float best = -1;
-        for (const auto& p : pts) {
-            m_curve.push_back(QVariant::fromValue(QPointF(p.standoffCD, p.penetrationCD)));
-            if (p.penetrationCD > best) { best = p.penetrationCD; m_optimum = QPointF(p.standoffCD, p.penetrationCD); }
+        const float drift = m_driftSpeed / 1000.0f;
+        const auto jet = scl::atApproachSpeed(m_jet, m_jetApproach, m_cfg.approachSpeed);
+        const auto pts = scl::penetrationCurve(jet, m_cfg, drift, 10, 0.1f);
+        for (const auto& p : pts) m_curve.push_back(QVariant::fromValue(QPointF(p.standoffCD, p.penetrationCD)));
+        const scl::CurvePoint peak = scl::bestStandoff(pts);
+        const float best = peak.penetrationCD;
+        float here = 0;
+        if (best > 0) m_optimum = QPointF(peak.standoffCD, best);
+        for (size_t k = 1; k < pts.size(); k++) {   // depth at the standoff set now (linear between curve points)
+            if (pts[k].standoffCD < m_cfg.standoffCD) continue;
+            const auto& a = pts[k - 1]; const auto& b = pts[k];
+            const float w = std::clamp((m_cfg.standoffCD - a.standoffCD) / (b.standoffCD - a.standoffCD), 0.0f, 1.0f);
+            here = a.penetrationCD + w * (b.penetrationCD - a.penetrationCD);
+            break;
+        }
+        for (const auto& o : scl::optimumVsApproach(m_jet, m_cfg, drift, m_jetApproach))
+            m_optimumVsSpeed.push_back(QVariant::fromValue(QPointF(o.approachSpeed, o.standoffCD)));
+        if (best > 0) {
+            m_bestNow = QPointF(m_cfg.approachSpeed, m_optimum.x());
+            const double mm = m_optimum.x() * m_cfg.chargeDiameter;
+            const int gain = here > 0 ? qRound((best / here - 1) * 100) : 0;
+            const QString head = QStringLiteral("Best %1 CD (%2 mm) at %3 m/s")
+                                     .arg(m_optimum.x(), 0, 'f', 1).arg(qRound(mm)).arg(qRound(m_cfg.approachSpeed));
+            m_bestSummary = gain >= 1
+                ? head + QStringLiteral(": %1% deeper than the %2 CD set now.").arg(gain).arg(m_cfg.standoffCD, 0, 'f', 1)
+                : head + QStringLiteral(": the %1 CD set now is within 1% of it.").arg(m_cfg.standoffCD, 0, 'f', 1);
         }
     }
     emit chartsChanged();

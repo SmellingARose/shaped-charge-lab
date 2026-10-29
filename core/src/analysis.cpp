@@ -46,4 +46,36 @@ std::vector<CurvePoint> penetrationCurve(const JetProfile& jet, const Config& cf
     return out;
 }
 
+CurvePoint bestStandoff(const std::vector<CurvePoint>& c) {
+    if (c.empty()) return {-1, -1};
+    size_t k = 0;
+    for (size_t i = 1; i < c.size(); i++) if (c[i].penetrationCD > c[k].penetrationCD) k = i;
+    if (k == 0 || k + 1 == c.size()) return c[k];
+    const float y0 = c[k - 1].penetrationCD, y1 = c[k].penetrationCD, y2 = c[k + 1].penetrationCD;
+    const float den = y0 - 2 * y1 + y2;
+    if (den >= 0) return c[k];
+    const float off = 0.5f * (y0 - y2) / den;   // in samples, within ±0.5
+    const float h = c[k + 1].standoffCD - c[k].standoffCD;
+    return {c[k].standoffCD + off * h, y1 - 0.25f * (y0 - y2) * off};
+}
+
+JetProfile atApproachSpeed(const JetProfile& jet, float measuredAtMS, float approachMS) {
+    const float dv = (approachMS - measuredAtMS) / 1000;   // km/s = mm/µs
+    JetProfile j = jet;
+    j.vTip += dv;
+    j.vTail += dv;
+    j.zVirtualOrigin += dv * jet.tVirtualOrigin;
+    return j;
+}
+
+std::vector<OptimumPoint> optimumVsApproach(const JetProfile& jet, const Config& cfg, float drift, float measuredAtMS,
+                                            float maxMS, float stepMS) {
+    std::vector<OptimumPoint> out;
+    for (float v = 0; v <= maxMS + 1e-3f; v += stepMS) {
+        const CurvePoint b = bestStandoff(penetrationCurve(atApproachSpeed(jet, measuredAtMS, v), cfg, drift, 10, 0.1f));
+        out.push_back({v, b.standoffCD, b.penetrationCD});
+    }
+    return out;
+}
+
 }  // namespace scl
