@@ -7,6 +7,7 @@
 namespace scl {
 
 namespace {
+constexpr float kPi = 3.14159265358979f;   // M_PI is not standard C++ (missing with MSVC headers)
 struct P0 { float x, y, z, m; uint32_t f; };
 
 float len3(float x, float y, float z) { return std::sqrt(x * x + y * y + z * z); }
@@ -17,7 +18,7 @@ Geometry3D buildGeometry(const Config& cfg) {
     g.config = cfg;
     g.CD = cfg.chargeDiameter;
     g.R = g.CD / 2;
-    g.alpha = cfg.coneAngleDeg / 2 * float(M_PI) / 180;
+    g.alpha = cfg.coneAngleDeg / 2 * kPi / 180;
     const float linerT = cfg.linerThicknessFrac * g.CD;
     g.dpFine = linerT / float(cfg.layers);
     g.dpCoarse = 2 * g.dpFine;
@@ -45,15 +46,15 @@ Geometry3D buildGeometry(const Config& cfg) {
         for (float s = 0.5f * fF; s <= S; s += fF) {
             const float rMid = s * sa - (j + 0.5f) * fF * ca;
             if (rMid <= 0.3f * fF) continue;
-            const int nth = std::max(1, int(std::lround(2 * M_PI * rMid / fF)));
+            const int nth = std::max(1, int(std::lround(2 * kPi * rMid / fF)));
             const float phase = uni(rng);
             for (int k = 0; k < nth; k++) {
-                const float th = 2 * float(M_PI) * (k + phase) / nth;
+                const float th = 2 * kPi * (k + phase) / nth;
                 const float scale = 1 + cfg.asymmetry.wallVariation * std::cos(th);
                 const float d = (j + 0.5f) * fF * scale;
                 const float rc = s * sa - d * ca, zc = g.zApex + s * ca + d * sa;
                 if (rc < 0.3f * fF || zc > g.L + 0.5f * fF) continue;
-                const float m = g.materials[1].rho0 * fF * fF * scale * (2 * float(M_PI) * rc / nth);
+                const float m = g.materials[1].rho0 * fF * fF * scale * (2 * kPi * rc / nth);
                 liner.push_back({rc * std::cos(th), rc * std::sin(th), zc, m, 1u | F_ACTIVE});
             }
         }
@@ -144,9 +145,9 @@ SceneInfo Geometry3D::scene() const {
 size_t estimateParticles(const Config& c) {
     const float CD = c.chargeDiameter, R = CD / 2;
     const float dpF = c.linerThicknessFrac * CD / float(c.layers), dpC = 2 * dpF;
-    const float a = c.coneAngleDeg / 2 * float(M_PI) / 180;
+    const float a = c.coneAngleDeg / 2 * kPi / 180;
     const float H = R / std::tan(a), L = H + c.headHeightCD * CD;
-    const float pi = float(M_PI);
+    const float pi = kPi;
     const double he = (pi * R * R * L - pi * R * R * H / 3) / (dpC * dpC * dpC);
     const double liner = pi * R * (R / std::sin(a)) * c.linerThicknessFrac * CD / (dpF * dpF * dpF);
     const float RT = c.targetRadiusCD * CD;
