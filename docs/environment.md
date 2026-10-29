@@ -50,7 +50,7 @@ Installed for this project:
 
 | Date | Software | Version | Source | Why |
 |---|---|---|---|---|
-| — | nothing installed system-wide yet | | | |
+| 2026-10-28 | Visual Studio 2022 Build Tools: C++ workload (`Microsoft.VisualStudio.Workload.VCTools`, recommended components), MSVC 14.44 (v143) | 17.14 | winget (`Microsoft.VisualStudio.2022.BuildTools`, modify of the existing install) | host toolchain supported by the HIP SDK |
 
 Working copies on `eric`: `C:\Users\ecitt\scl-src` (source synced from the Mac by `git archive`).
 
