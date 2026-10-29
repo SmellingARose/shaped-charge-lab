@@ -163,6 +163,10 @@ struct RunOptions {
     size_t memoryBudgetBytes = size_t(3) << 30;      // older frames are thinned when exceeded
 };
 
+/// Initial state of a configuration (no physics), for showing the charge and target before a run.
+/// Fast enough to call whenever a parameter changes.
+SceneInfo preview(const Config&, std::vector<Particle3D>& particles);
+
 /// Rough particle count and wall-clock estimate for the UI before starting.
 struct RunEstimate { size_t particles; double minutes; };
 RunEstimate estimateRun(const Config&, const Device&);

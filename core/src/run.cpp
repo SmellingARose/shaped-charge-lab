@@ -220,6 +220,24 @@ private:
 
 }  // namespace
 
+SceneInfo preview(const Config& c, std::vector<Particle3D>& out) {
+    const Geometry3D g = buildGeometry(c);
+    auto q = [](float v, float lo, float span) {
+        return uint16_t(std::lround(std::fmin(std::fmax((v - lo) / span, 0.0f), 1.0f) * 65535.0f));
+    };
+    out.assign(g.used, Particle3D{});
+    for (size_t i = 0; i < g.used; i++) {
+        Particle3D& p = out[i];
+        p.x = q(g.pos[i][0], -g.boxRadius, 2 * g.boxRadius);
+        p.y = q(g.pos[i][1], -g.boxRadius, 2 * g.boxRadius);
+        p.z = q(g.pos[i][2], g.zMin, g.zMax - g.zMin);
+        const uint32_t f = g.flags[i];
+        p.material = uint8_t(f & 255u);
+        p.flags = uint8_t(1u | ((f & F_COARSE) ? 8u : 0u));
+    }
+    return g.scene();
+}
+
 RunEstimate estimateRun(const Config& c, const Device& d) {
     const size_t n = estimateParticles(c);
     const double dpF = c.linerThicknessFrac * c.chargeDiameter / c.layers;
