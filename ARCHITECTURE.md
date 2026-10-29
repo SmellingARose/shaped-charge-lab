@@ -56,6 +56,10 @@ So the three backends cannot drift apart: a physics fix is one edit.
 - Refinement: per-particle deformation gradient F (dF/dt = L·F); split at principal stretch 2 along that direction,
   mass- and momentum-conserving, F halved along the split.
 - Full 3D only (no symmetry): uniform grid, counting sort, particle data reordered into cell order every step.
+  Cells are half the largest interaction distance and the search covers ±2 cells, scanned as contiguous rows of
+  cells, so the small liner and jet particles check fewer far-away candidates; the neighbours found are the same.
+  One pass per step over the neighbours computes both the rates and the forces (`interactBody`).
+  Check solver changes with `scl_stephash` (fixed steps, one CPU thread, particle hash).
   Liner at fine spacing, explosive and target at 2× spacing.
 - Runs record frames as they go: the app watches the newest frame live and can scrub/play back at any time.
 - Run ends when no liner material over the target exceeds the cutoff speed √(2R_target/ρ_jet).

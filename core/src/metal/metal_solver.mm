@@ -113,7 +113,13 @@ private:
         cellOf_ = make(n_ * 4); rank_ = make(n_ * 4); sorted_ = make(n_ * 4);
         const size_t nc1 = size_t(P_.gdim.w) + 1;
         cnt_ = make(nc1 * 4); start_ = make((nc1 + 1) * 4);
-        sums_ = make(1024 * 4 * 2); sumsScanned_ = make(1024 * 4 * 2); scratch_ = make(1024 * 4 * 2);
+        // block sums per scan level, down to a single block
+        for (size_t len = nc1, level = 0; level < kScanLevels; level++) {
+            const size_t blocks = (len + 1023) / 1024;
+            sums_[level] = make(blocks * 4); sumsScanned_[level] = make(blocks * 4);
+            if (blocks == 1) break;
+            len = blocks;
+        }
         state_ = make(S_COUNT * 4);
         mats_ = make(sizeof(MatP) * 3);
         frame_ = make(n_ * sizeof(Particle3D));
@@ -161,19 +167,17 @@ private:
         run(e, name, count);
     }
 
-    void scan(id<MTLComputeCommandEncoder> e) {
-        u32 len = u32(P_.gdim.w) + 1;
+    // Exclusive scan of any length up to 1024^kScanLevels: scan 1024-blocks, scan their sums (recursively), add back.
+    void scan(id<MTLComputeCommandEncoder> e, id<MTLBuffer> in, id<MTLBuffer> out, u32 len, int level) {
         const NSUInteger blocks = (len + 1023) / 1024;
         [e setComputePipelineState:pso_["gScan"]];
-        [e setBuffer:cnt_ offset:0 atIndex:0]; [e setBuffer:start_ offset:0 atIndex:1]; [e setBuffer:sums_ offset:0 atIndex:2];
+        [e setBuffer:in offset:0 atIndex:0]; [e setBuffer:out offset:0 atIndex:1]; [e setBuffer:sums_[level] offset:0 atIndex:2];
         [e setBytes:&len length:4 atIndex:3];
         [e dispatchThreadgroups:MTLSizeMake(blocks, 1, 1) threadsPerThreadgroup:MTLSizeMake(1024, 1, 1)];
-        u32 blen = u32(blocks);
-        [e setBuffer:sums_ offset:0 atIndex:0]; [e setBuffer:sumsScanned_ offset:0 atIndex:1]; [e setBuffer:scratch_ offset:0 atIndex:2];
-        [e setBytes:&blen length:4 atIndex:3];
-        [e dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1024, 1, 1)];
+        if (blocks == 1) return;
+        scan(e, sums_[level], sumsScanned_[level], u32(blocks), level + 1);
         [e setComputePipelineState:pso_["gAddSums"]];
-        [e setBuffer:start_ offset:0 atIndex:0]; [e setBuffer:sumsScanned_ offset:0 atIndex:1];
+        [e setBuffer:out offset:0 atIndex:0]; [e setBuffer:sumsScanned_[level] offset:0 atIndex:1];
         [e setBytes:&len length:4 atIndex:2];
         [e dispatchThreadgroups:MTLSizeMake(blocks, 1, 1) threadsPerThreadgroup:MTLSizeMake(1024, 1, 1)];
     }
@@ -186,7 +190,7 @@ private:
         [e setBuffer:cellOf_ offset:0 atIndex:2]; [e setBuffer:rank_ offset:0 atIndex:3]; [e setBuffer:cnt_ offset:0 atIndex:4];
         [e setBytes:&P_ length:sizeof(P_) atIndex:5];
         run(e, "gAssign", n_);
-        scan(e);
+        scan(e, cnt_, start_, u32(P_.gdim.w) + 1, 0);
         [e setBuffer:cellOf_ offset:0 atIndex:0]; [e setBuffer:rank_ offset:0 atIndex:1]; [e setBuffer:start_ offset:0 atIndex:2];
         [e setBuffer:sorted_ offset:0 atIndex:3]; [e setBytes:&P_ length:sizeof(P_) atIndex:4];
         run(e, "gScatter", n_);
@@ -215,7 +219,9 @@ private:
     id<MTLCommandQueue> queue_;
     std::map<std::string, id<MTLComputePipelineState>> pso_;
     std::map<std::string, id<MTLBuffer>> buf_;
-    id<MTLBuffer> cellOf_, rank_, sorted_, cnt_, start_, sums_, sumsScanned_, scratch_, state_, mats_, frame_;
+    id<MTLBuffer> cellOf_, rank_, sorted_, cnt_, start_, state_, mats_, frame_;
+    static constexpr int kScanLevels = 3;   // 1024³ cells
+    id<MTLBuffer> sums_[kScanLevels] = {}, sumsScanned_[kScanLevels] = {};
     Device dev_;
 };
 

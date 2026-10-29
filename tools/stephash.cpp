@@ -27,7 +27,9 @@ int main(int argc, char** argv) {
     if (backend == "hip") s = scl::makeGpuPluginSolver(g, 0);
 #endif
     if (!s) s = scl::makeCpuSolver(g, 1);
-    std::printf("%s, %zu particles, %d steps\n", s->device().name.c_str(), g.used, steps);
+    const SimParams P = scl::makeSimParams(g);
+    std::printf("%s, %zu particles, %d steps, grid %u×%u×%u cells of %.3f mm\n", s->device().name.c_str(), g.used, steps,
+                P.gdim.x, P.gdim.y, P.gdim.z, P.gmin.w);
     double ms = 0;
     for (int k = 0; k < steps; k += 10) ms += s->step(10) * 10;
     scl::SolverState st = s->state();

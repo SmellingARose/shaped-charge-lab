@@ -3,19 +3,25 @@
 
 namespace scl {
 
+// Grid size bound: 2 × 4 bytes per cell (counts and starts) on every backend, 128 MB at the limit.
+constexpr size_t kMaxCells = size_t(16) << 20;
+
 SimParams makeSimParams(const Geometry3D& g) {
-    float cs = 2 * 1.3f * g.dpCoarse;
+    // Largest interaction distance: twice the coarse smoothing length (h only shrinks, when particles split)
+    float reach = 2 * 1.3f * g.dpCoarse;
     int nx = 0, nz = 0;
     for (;;) {
+        const float cs = reach / SCL_CELL_REACH;
         nx = int(2 * g.boxRadius / cs) + 1;
         nz = int((g.zMax - g.zMin) / cs) + 1;
-        if (size_t(nx) * nx * nz + 1 <= size_t(1024) * 1024) break;   // GPU scan handles up to 1024² cells
-        cs *= 1.08f;
+        if (size_t(nx) * nx * nz + 1 <= kMaxCells) break;
+        reach *= 1.08f;   // memory bound for the finest resolutions: larger cells, still covering every neighbour
     }
+    const float cs = reach / SCL_CELL_REACH;
     SimParams P{};
     P.gmin = mk4(-g.boxRadius, -g.boxRadius, g.zMin, cs);
     P.gdim = {u32(nx), u32(nx), u32(nz), u32(nx * nx * nz)};
-    P.box = mk4(g.boxRadius - 0.5f * cs, g.zMin + 0.5f * cs, g.zMax - 0.5f * cs, g.zFace);
+    P.box = mk4(g.boxRadius - 0.5f * reach, g.zMin + 0.5f * reach, g.zMax - 0.5f * reach, g.zFace);   // vent margin
     P.misc = mk4(g.RT, g.dpFine, 2 * 2.6f * g.dpCoarse + 2 * g.dpFine, g.RT - 3 * g.dpCoarse);
     P.cnt = {u32(g.capacity), u32(g.config.jetRefinement), 0, 0};
     P.quant = mk4(-g.boxRadius, -g.boxRadius, g.zMin, 2 * g.boxRadius);

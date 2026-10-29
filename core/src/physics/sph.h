@@ -97,14 +97,22 @@ SCL_FN u32 particleCell(u32 i, Particles b, SCL_CONST const SimParams& P) {
     return cellIndex(cx, cy, cz, P);
 }
 
-// Neighbour loop over the 27 surrounding cells (particles are stored in cell order, so j = slot).
+// Cells are 1/SCL_CELL_REACH of the largest interaction distance (2 × the coarse smoothing length), and the neighbour
+// loop covers SCL_CELL_REACH cells each way, so every particle within reach is found. Smaller cells than the reach
+// mean fewer far-away candidates checked for the small liner and jet particles; the neighbours found are the same.
+#define SCL_CELL_REACH 2
+
+// Neighbour loop over the surrounding (2·SCL_CELL_REACH + 1)³ cells. Particles are stored in cell order and cells along
+// x are consecutive, so each row of cells is one contiguous range of slots (j = slot).
 #define SCL_NEIGHBOURS_BEGIN \
     int cbx = cellCoord(pi.x, P.gmin.x, P.gmin.w), cby = cellCoord(pi.y, P.gmin.y, P.gmin.w), cbz = cellCoord(pi.z, P.gmin.z, P.gmin.w); \
-    for (int dz = -1; dz <= 1; dz++) for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) { \
-        if (!cellInGrid(cbx + dx, cby + dy, cbz + dz, P)) continue; \
-        u32 cell = cellIndex(cbx + dx, cby + dy, cbz + dz, P); \
-        u32 q1 = g.start[cell + 1]; \
-        for (u32 j = g.start[cell]; j < q1; j++) { \
+    int cx0 = cbx - SCL_CELL_REACH > 0 ? cbx - SCL_CELL_REACH : 0; \
+    int cx1 = cbx + SCL_CELL_REACH < int(P.gdim.x) - 1 ? cbx + SCL_CELL_REACH : int(P.gdim.x) - 1; \
+    for (int dz = -SCL_CELL_REACH; dz <= SCL_CELL_REACH; dz++) \
+    for (int dy = -SCL_CELL_REACH; dy <= SCL_CELL_REACH; dy++) { \
+        if (!cellInGrid(cx0, cby + dy, cbz + dz, P)) continue; \
+        u32 q1 = g.start[cellIndex(cx1, cby + dy, cbz + dz, P) + 1]; \
+        for (u32 j = g.start[cellIndex(cx0, cby + dy, cbz + dz, P)]; j < q1; j++) { \
             if (j == i) continue; \
             v4 pj4 = b.pos[j]; \
             v3 d = pi - xyz(pj4); \

@@ -173,9 +173,15 @@ private:
             !alloc(dS1_, n_) || !alloc(cellOf_, n_) || !alloc(rank_, n_) || !alloc(sorted_, n_) || !alloc(frame_, n_))
             return false;
         ncells1_ = size_t(P_.gdim.w) + 1;
-        if (!alloc(cnt_, ncells1_) || !alloc(start_, ncells1_ + 1) || !alloc(sums_, 2048) || !alloc(sumsScanned_, 2048) ||
-            !alloc(scratch_, 2048) || !alloc(state_, S_COUNT) || !alloc(mats_, 3))
+        if (!alloc(cnt_, ncells1_) || !alloc(start_, ncells1_ + 1) || !alloc(state_, S_COUNT) || !alloc(mats_, 3))
             return false;
+        // block sums per scan level, down to a single block
+        for (size_t len = ncells1_, levels = 0; levels < kScanLevels; levels++) {
+            const size_t blocks = (len + 1023) / 1024;
+            if (!alloc(sums_[levels], blocks) || !alloc(sumsScanned_[levels], blocks)) return false;
+            if (blocks == 1) break;
+            len = blocks;
+        }
 
         std::vector<v4> pos(n_), vel(n_), st(n_), aux(n_), zero(n_, mk4(0, 0, 0, 0));
         std::vector<v4> G0(n_, mk4(1, 0, 0, 0)), G1(n_, mk4(0, 1, 0, 0)), G2(n_, mk4(0, 0, 1, 0));
@@ -213,15 +219,22 @@ private:
         return b;
     }
 
+    // Exclusive scan of any length up to 1024^kScanLevels: scan 1024-blocks, scan their sums (recursively), add back.
+    void scan(const u32* in, u32* out, u32 len, int level) {
+        const unsigned blocks = (len + 1023) / 1024;
+        gScan<<<blocks, 1024>>>(in, out, sums_[level], len);
+        if (blocks == 1) return;
+        scan(sums_[level], sumsScanned_[level], blocks, level + 1);
+        gAddSums<<<blocks, 1024>>>(out, sumsScanned_[level], len);
+    }
+
     void stepOnce() {
         mark(0);
         const u32 len = u32(ncells1_);
-        const unsigned scanBlocks = (len + 1023) / 1024;
+
         gClear<<<blocksFor(ncells1_), TPB>>>(cnt_, P_);
         gAssign<<<blocksFor(n_), TPB>>>(particles(), cellOf_, rank_, cnt_, P_);
-        gScan<<<scanBlocks, 1024>>>(cnt_, start_, sums_, len);
-        gScan<<<1, 1024>>>(sums_, sumsScanned_, scratch_, scanBlocks);
-        gAddSums<<<scanBlocks, 1024>>>(start_, sumsScanned_, len);
+        scan(cnt_, start_, len, 0);
         gScatter<<<blocksFor(n_), TPB>>>(cellOf_, rank_, start_, sorted_, P_);
         gPermute<<<blocksFor(n_), TPB>>>(cur_, alt_, sorted_, P_);
         std::swap(cur_, alt_);
@@ -262,7 +275,10 @@ private:
     Persist cur_{}, alt_{};
     v4 *L0_ = nullptr, *L1_ = nullptr, *L2_ = nullptr, *acc_ = nullptr, *r0_ = nullptr, *dS0_ = nullptr, *dS1_ = nullptr;
     u32 *cellOf_ = nullptr, *rank_ = nullptr, *sorted_ = nullptr, *cnt_ = nullptr, *start_ = nullptr;
-    u32 *sums_ = nullptr, *sumsScanned_ = nullptr, *scratch_ = nullptr, *state_ = nullptr;
+    static constexpr int kScanLevels = 3;   // 1024³ cells
+    u32* sums_[kScanLevels] = {};
+    u32* sumsScanned_[kScanLevels] = {};
+    u32* state_ = nullptr;
     MatP* mats_ = nullptr;
     FrameP* frame_ = nullptr;
     std::vector<void*> allocations_;
