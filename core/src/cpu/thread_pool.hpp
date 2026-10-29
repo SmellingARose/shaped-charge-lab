@@ -1,13 +1,29 @@
 // Persistent worker pool with a chunked parallel_for (the calling thread participates).
 #pragma once
 #include <atomic>
+#include <cstdint>
 #include <condition_variable>
 #include <functional>
 #include <mutex>
 #include <thread>
 #include <vector>
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+#include <xmmintrin.h>
+#endif
 
 namespace scl {
+
+/// Flush denormals to zero on this thread. Detonation spreads tiny values (< 1e-38) ahead of the front;
+/// x86 CPUs handle those through a ~100× slower microcode path. They have no physical effect here.
+inline void enableFlushToZero() {
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+    _mm_setcsr(_mm_getcsr() | 0x8040);   // FTZ | DAZ
+#elif defined(__aarch64__) && !defined(__APPLE__) && !defined(_MSC_VER)
+    uint64_t fpcr;
+    __asm__ volatile("mrs %0, fpcr" : "=r"(fpcr));
+    __asm__ volatile("msr fpcr, %0" : : "r"(fpcr | (1ull << 24)));
+#endif
+}
 
 class ThreadPool {
 public:
@@ -19,7 +35,7 @@ public:
         if (threads == int(workers_.size()) + 1) return;
         stopAll();
         stop_ = false;
-        for (int k = 0; k < threads - 1; k++) workers_.emplace_back([this] { workerLoop(); });
+        for (int k = 0; k < threads - 1; k++) workers_.emplace_back([this] { enableFlushToZero(); workerLoop(); });
     }
     int size() const { return int(workers_.size()) + 1; }
 

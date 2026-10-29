@@ -1,6 +1,8 @@
 // CPU backend: the shared physics in physics/sph.h run over a persistent thread pool.
 // Particle data is reordered into grid-cell order every step so neighbour loops stream through memory.
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <thread>
 #include "../solver.hpp"
@@ -42,6 +44,7 @@ public:
     }
 
     double step(int steps) override {
+        enableFlushToZero();   // the calling thread works in parallelFor too
         auto t0 = std::chrono::steady_clock::now();
         for (int k = 0; k < steps; k++) {
             stepOnce();
@@ -110,12 +113,14 @@ private:
         const size_t ncells = P_.gdim.w;
         Particles b = bufs();
         each(n_, [&](u32 i) { cellOf_[i] = particleCell(i, b, P_); });
+        // Serial counting sort: measured faster than an atomic parallel count, because many particles
+        // share each cell and the counters thrash between cores.
         std::fill(cnt_.begin(), cnt_.end(), 0u);
         for (size_t i = 0; i < n_; i++) rank_[i] = cnt_[cellOf_[i]]++;   // sentinel bucket = ncells
         u32 acc = 0;
         for (size_t c = 0; c <= ncells; c++) { start_[c] = acc; acc += cnt_[c]; }
         start_[ncells + 1] = acc;
-        for (size_t i = 0; i < n_; i++) sorted_[start_[cellOf_[i]] + rank_[i]] = u32(i);
+        each(n_, [&](u32 i) { sorted_[start_[cellOf_[i]] + rank_[i]] = i; });
         // permute persistent arrays into cell order
         each(n_, [&](u32 k) {
             const u32 j = sorted_[k];
@@ -127,17 +132,36 @@ private:
     }
 
     void stepOnce() {
+        using clk = std::chrono::steady_clock;
+        auto t0 = clk::now();
         buildGrid();
+        auto t1 = clk::now();
         Particles b = bufs();
         Grid g{start_.data()};
         const size_t live = start_[P_.gdim.w];
         each(n_, [&](u32 i) { eosBody(i, b, mats_, P_); });
+        auto t2 = clk::now();
         each(live, [&](u32 i) { ratesBody(i, b, g, mats_, P_); });
+        auto t3 = clk::now();
         each(live, [&](u32 i) { forcesBody(i, b, g, state_, P_); });
+        auto t4 = clk::now();
         finalizeDtBody(state_);
         each(n_, [&](u32 i) { integrateBody(i, b, state_, mats_, P_); });
         advanceBody(state_, P_);
+        auto t5 = clk::now();
+        if (profile_) {
+            auto ms = [](auto a, auto b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
+            prof_[0] += ms(t0, t1); prof_[1] += ms(t1, t2); prof_[2] += ms(t2, t3); prof_[3] += ms(t3, t4); prof_[4] += ms(t4, t5);
+            if (++profSteps_ == 50) {
+                std::fprintf(stderr, "cpu profile ms/step: grid %.2f eos %.2f rates %.2f forces %.2f integrate %.2f (live %zu)\n",
+                             prof_[0] / 50, prof_[1] / 50, prof_[2] / 50, prof_[3] / 50, prof_[4] / 50, live);
+                profSteps_ = 0; for (double& v : prof_) v = 0;
+            }
+        }
     }
+    bool profile_ = std::getenv("SCL_PROFILE") != nullptr;
+    double prof_[5] = {0, 0, 0, 0, 0};
+    int profSteps_ = 0;
 
     SimParams P_;
     size_t n_;

@@ -1,5 +1,5 @@
 // Core smoke test / benchmark.
-//   scl_smoke [seconds] [layers] [backend: auto|cpu|metal|hip]
+//   scl_smoke [seconds] [layers] [backend: auto|cpu|metal|hip] [cpu threads]
 // Runs the default charge, prints progress, and stops after `seconds` (0 = run to completion).
 #include <chrono>
 #include <cstdio>
@@ -16,6 +16,12 @@ int main(int argc, char** argv) {
     if (argc > 3) {
         std::string b = argv[3];
         opt.backend = b == "cpu" ? scl::Backend::CPU : b == "metal" ? scl::Backend::Metal : b == "hip" ? scl::Backend::HIP : scl::Backend::Auto;
+    }
+    scl::Device cpu;
+    if (argc > 4) {
+        for (const auto& d : scl::listDevices()) if (d.backend == scl::Backend::CPU) cpu = d;
+        cpu.computeUnits = std::atoi(argv[4]);
+        opt.device = &cpu;
     }
     for (const auto& d : scl::listDevices()) std::printf("device: %s\n", d.name.c_str());
     auto est = scl::estimateRun(cfg, scl::listDevices().front());
