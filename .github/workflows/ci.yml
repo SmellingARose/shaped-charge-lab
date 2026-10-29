@@ -21,7 +21,9 @@ jobs:
         include:
           - os: macos-15
             name: macos-arm64
-          - os: windows-latest
+          # VS 2022 (MSVC v143): the toolchain the AMD HIP SDK supports; windows-latest ships only VS 2026, whose
+          # MSVC 14.5x headers do not compile with the HIP SDK 6.4 clang.
+          - os: windows-2022
             name: windows-x64
     runs-on: ${{ matrix.os }}
     name: ${{ matrix.name }}
