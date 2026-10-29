@@ -243,9 +243,13 @@ Window {
             controller: SimController
         }
 
+        // Beside the view controls when the stage is wide enough, otherwise underneath them
         Hud {
-            x: 16; y: 16
-            width: Math.min(440, stage.width - viewControls.width - 48)
+            readonly property real roomBeside: stage.width - viewControls.width - 48
+            readonly property bool beside: roomBeside >= 300
+            x: 16
+            y: beside ? 16 : viewControls.y + viewControls.height + 12
+            width: Math.min(440, beside ? roomBeside : stage.width - 32)
         }
 
         // view controls

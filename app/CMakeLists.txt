@@ -1,7 +1,7 @@
-find_package(Qt6 6.7 REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2 ShaderTools)
+find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2 ShaderTools)
 # QRhi headers: a separate GuiPrivate package from Qt 6.9, part of Qt6Gui before that
 find_package(Qt6 QUIET COMPONENTS GuiPrivate)
-qt_standard_project_setup(REQUIRES 6.7)
+qt_standard_project_setup(REQUIRES 6.8)
 
 qt_add_executable(ShapedChargeLab MACOSX_BUNDLE WIN32 src/main.cpp)
 set_target_properties(ShapedChargeLab PROPERTIES

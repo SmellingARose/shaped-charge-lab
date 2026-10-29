@@ -76,7 +76,7 @@ The physics is written once (`core/src/physics/sph.h`) and compiled for every ba
 
 ## Build
 
-Requires CMake ≥ 3.25, a C++20 compiler and Qt ≥ 6.7 (Quick, QuickControls2, ShaderTools).
+Requires CMake ≥ 3.25, a C++20 compiler and Qt ≥ 6.8 (Quick, QuickControls2, ShaderTools).
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release

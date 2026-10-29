@@ -10,7 +10,8 @@ on:
   workflow_dispatch:
 
 env:
-  QT_VERSION: "6.8.3"
+  # 6.10: Qt 6.8 adds the AGL framework, gone from the macOS 26 SDK; aqtinstall 3.3 cannot install 6.11 on Windows yet
+  QT_VERSION: "6.10.3"
 
 jobs:
   build:
@@ -41,6 +42,7 @@ jobs:
         with:
           version: ${{ env.QT_VERSION }}
           modules: qtshadertools
+          aqtversion: "==3.3.*"
           cache: true
 
       - name: Install Ninja (macOS)

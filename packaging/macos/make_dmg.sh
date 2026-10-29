@@ -22,7 +22,7 @@ ditto "$SRC_APP" "$STAGE/Shaped Charge Lab.app"
 APP="$STAGE/Shaped Charge Lab.app"
 cp "$BUILD/core/scl_smoke" "$APP/Contents/MacOS/scl_smoke"   # headless benchmark travels inside the bundle
 
-"$MACDEPLOYQT" "$APP" -qmldir="$HERE/../../app/qml" -executable="$APP/Contents/MacOS/scl_smoke" -always-overwrite
+"$MACDEPLOYQT" "$APP" -qmldir="$HERE/../../app/qml" -executable="$APP/Contents/MacOS/scl_smoke" -always-overwrite -appstore-compliant   # skips Qt's qsqlodbc/qsqlpsql, which link the Qt build host's Homebrew
 
 # Sign inside-out (dylibs / plugins, frameworks, helpers, then the bundle). --deep is deprecated for signing.
 SIGN=(codesign --force --sign "$IDENTITY")

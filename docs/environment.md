@@ -8,7 +8,9 @@ Everything installed for this project is logged here, so a machine can be rebuil
 |---|---|---|---|
 | Xcode Command Line Tools | Swift 6.4 / Apple clang | preinstalled | C++/Objective-C++, Metal runtime compile |
 | CMake | Homebrew | preinstalled | build |
-| Qt | 6.12.0 (Homebrew) | preinstalled | app |
+| Qt | 6.12.0 (Homebrew) | preinstalled | app (day-to-day builds; not for packaging, its plug-ins link Homebrew) |
+| aqtinstall (Python venv) | 3.3.0 | PyPI, `~/Qt-official/venv` (installed 2026-10-28) | installs the official Qt CI uses |
+| Qt (official binaries) | 6.10.3, `qtbase` + `qtdeclarative` + `qtshadertools`, debug symbols deleted (1.2 GB) | `aqt install-qt mac desktop 6.10.3 clang_64 --archives qtbase qtdeclarative -m qtshadertools -O ~/Qt-official` (2026-10-28) | local check of the CI packaging (`.dmg`) |
 
 ## `eric` (Windows test machine, reached over Tailscale as `ecitt@eric`)
 
@@ -53,8 +55,14 @@ Installed for this project:
 | 2026-10-28 | Visual Studio 2022 Build Tools: C++ workload (`Microsoft.VisualStudio.Workload.VCTools`, recommended components), MSVC 14.44 (v143) | 17.14 | winget (`Microsoft.VisualStudio.2022.BuildTools`, modify of the existing install) | host toolchain supported by the HIP SDK |
 | 2026-10-28 | AMD HIP SDK core (ROCm 6.4, from AMD's 25.Q3 package, `ROCm_SDK_Core.msi` only; display driver untouched) | 6.4 | download.amd.com | HIP backend; runtime comes from the Adrenalin driver (`amdhip64_6.dll`) |
 | 2026-10-28 | Removed the temporary 7.2/6.4 extracts and the 26.Q3 installer | | | cleanup |
+| 2026-10-28 | aqtinstall | 3.3.0 | `pip install --user aqtinstall` | installs the official Qt CI uses |
+| 2026-10-28 | Qt (official binaries, MSVC 2022 x64) + Qt Shader Tools | 6.10.3 | `python -m aqt install-qt windows desktop 6.10.3 win64_msvc2022_64 -m qtshadertools -O %USERPROFILE%\Qt` | app build and `.msi` packaging |
+| 2026-10-28 | .NET SDK (per user, `%LOCALAPPDATA%\Microsoft\dotnet`) | 8.0.427 | `dotnet-install.ps1 -Channel 8.0` | runs the WiX tool |
+| 2026-10-28 | WiX Toolset (dotnet global tool, `%USERPROFILE%\.dotnet\tools`) | 5.0.2 | `dotnet tool install --global wix --version 5.0.2` | builds the `.msi`; needs `DOTNET_ROOT=%LOCALAPPDATA%\Microsoft\dotnet` |
 
 Result: `tools\windows\build-hip.bat` builds cleanly; the HIP backend runs on the RX 6700 XT.
+`tools\windows\build-app.bat` builds and deploys the app as CI does; the `.msi` from `packaging/windows/make_msi.sh`
+(run with Git Bash) installs, launches and uninstalls silently from the SSH session.
 
 Working copies on `eric`: `C:\Users\ecitt\scl-src` (source synced from the Mac by `git archive`).
 
@@ -63,3 +71,27 @@ Notes:
   prebuilt math libraries (rocBLAS etc.), which this project does not use; our kernels are compiled for gfx1031 directly.
 - Intel CPUs need flush-to-zero for denormals (done in `core/src/cpu/thread_pool.hpp`); without it the CPU backend was
   4–5× slower after detonation.
+
+## Checking the installers locally (what CI does)
+
+Qt version: 6.10.3 on both. Qt 6.8 cannot link on the macOS 26 SDK (its CMake still adds the removed AGL
+framework), and aqtinstall 3.3.0 cannot read the per-architecture Windows repository layout Qt uses from 6.11.
+
+Mac:
+
+```bash
+cmake -S . -B build-ci -G Ninja -DCMAKE_BUILD_TYPE=Release -DSCL_GPU=OFF -DCMAKE_PREFIX_PATH=$HOME/Qt-official/6.10.3/macos
+cmake --build build-ci
+packaging/macos/make_dmg.sh build-ci build-ci/dist
+```
+
+`eric` (from the source folder; WiX needs the .NET location):
+
+```bat
+tools\windows\build-app.bat
+set "DOTNET_ROOT=%LOCALAPPDATA%\Microsoft\dotnet"
+set "PATH=%USERPROFILE%\.dotnet\tools;%PATH%"
+"C:\Program Files\Git\bin\bash.exe" packaging/windows/make_msi.sh build-app dist
+```
+
+Results on 2026-10-28: the `.dmg` (57 MB) and the `.msi` (30 MB) both install and launch, and the bundled `scl_smoke` runs.
