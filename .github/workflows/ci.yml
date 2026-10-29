@@ -1,0 +1,145 @@
+# CI: macOS arm64 (Metal + CPU) and Windows x64 (MSVC, CPU; Direct3D for the UI). Pushes and pull requests build,
+# smoke-test and package. A tag v<version> (matching project(VERSION) in CMakeLists.txt) builds, packages and
+# publishes a GitHub release with the two installers.
+name: ci
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  QT_VERSION: "6.8.3"
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            name: macos-arm64
+          - os: windows-latest
+            name: windows-x64
+    runs-on: ${{ matrix.os }}
+    name: ${{ matrix.name }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag matches the version in CMakeLists.txt
+        if: github.ref_type == 'tag'
+        run: |
+          V=$(sed -nE 's/^project\(ShapedChargeLab VERSION ([0-9.]+).*/\1/p' CMakeLists.txt)
+          [[ "v$V" == "$GITHUB_REF_NAME" ]] || { echo "::error::tag $GITHUB_REF_NAME, but CMakeLists.txt says $V: bump project(VERSION) first"; exit 1; }
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          modules: qtshadertools
+          cache: true
+
+      - name: Install Ninja (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja
+
+      - name: MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Configure
+        # The AMD/NVIDIA GPU backend ships later as a runtime-loaded plug-in; these builds use CPU (and Metal on macOS).
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSCL_GPU=OFF
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Core smoke (CPU solver, 15 s)
+        if: github.ref_type != 'tag'
+        run: build/core/scl_smoke 15 2 cpu
+
+      - name: Deploy (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          cmake --build build --target scl_deploy
+          ls build/deploy/vcruntime140.dll build/deploy/msvcp140.dll   # app-local MSVC runtime
+
+      - name: App launch smoke (screenshot)
+        if: github.ref_type != 'tag'
+        env:
+          QSG_RHI_PREFER_SOFTWARE_RENDERER: "1"   # WARP on Windows runners (no GPU)
+        run: |
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            "build/app/Shaped Charge Lab.app/Contents/MacOS/Shaped Charge Lab" --quit-after 8 --screenshot app-${{ matrix.name }}.png
+          else
+            pwsh -Command '$p = Start-Process -FilePath "build/deploy/Shaped Charge Lab.exe" -ArgumentList "--quit-after","8","--screenshot","app-${{ matrix.name }}.png" -PassThru -Wait; exit $p.ExitCode'
+          fi
+          ls -la app-${{ matrix.name }}.png
+
+      - name: Installer (macOS .dmg, ad-hoc signed)
+        if: runner.os == 'macOS'
+        run: packaging/macos/make_dmg.sh build dist
+
+      - name: Installer (Windows .msi, WiX v5)
+        if: runner.os == 'Windows'
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          echo "$USERPROFILE/.dotnet/tools" >> "$GITHUB_PATH"
+          export PATH="$USERPROFILE/.dotnet/tools:$PATH"
+          packaging/windows/make_msi.sh build dist
+
+      - name: Installer smoke (install, launch, uninstall)
+        if: github.ref_type != 'tag'
+        env:
+          QSG_RHI_PREFER_SOFTWARE_RENDERER: "1"
+        run: |
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            M=$(mktemp -d); hdiutil attach -nobrowse -mountpoint "$M" dist/*.dmg
+            cp -R "$M/Shaped Charge Lab.app" "$RUNNER_TEMP/"; hdiutil detach "$M"
+            "$RUNNER_TEMP/Shaped Charge Lab.app/Contents/MacOS/scl_smoke" 5 2 cpu
+            "$RUNNER_TEMP/Shaped Charge Lab.app/Contents/MacOS/Shaped Charge Lab" --quit-after 8 --screenshot installed-${{ matrix.name }}.png
+          else
+            MSI=$(cygpath -w dist/*.msi)
+            pwsh -Command "\$p = Start-Process msiexec -ArgumentList '/i','$MSI','/qn','/l*v','msi.log' -PassThru -Wait; exit \$p.ExitCode" || { tail -50 msi.log; exit 1; }
+            ls -la "/c/Program Files/Shaped Charge Lab" || { iconv -f UTF-16LE -t UTF-8 msi.log | grep -iE "error|return value 3|INSTALLFOLDER" | head -40; exit 1; }
+            "/c/Program Files/Shaped Charge Lab/scl_smoke.exe" 5 2 cpu
+            pwsh -Command "\$p = Start-Process -FilePath 'C:/Program Files/Shaped Charge Lab/Shaped Charge Lab.exe' -ArgumentList '--quit-after','8','--screenshot','installed-${{ matrix.name }}.png' -PassThru -Wait; exit \$p.ExitCode"
+            pwsh -Command "\$p = Start-Process msiexec -ArgumentList '/x','$MSI','/qn' -PassThru -Wait; exit \$p.ExitCode"
+            test ! -e "/c/Program Files/Shaped Charge Lab/Shaped Charge Lab.exe"
+          fi
+          ls -la installed-${{ matrix.name }}.png
+
+      - name: Collect artefacts
+        run: |
+          mkdir -p dist
+          rm -rf dist/stage
+          cp app-${{ matrix.name }}.png installed-${{ matrix.name }}.png dist/ 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shapedchargelab-${{ matrix.name }}
+          path: dist/
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artefacts
+      - name: Publish the GitHub release with the installers
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" -R "${GITHUB_REPOSITORY}" --generate-notes \
+            --title "Shaped Charge Lab ${GITHUB_REF_NAME}" \
+            artefacts/*/ShapedChargeLab-macOS.dmg artefacts/*/ShapedChargeLab-Windows.msi

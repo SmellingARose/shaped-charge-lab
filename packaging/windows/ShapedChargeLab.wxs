@@ -1,0 +1,23 @@
+<!-- Shaped Charge Lab MSI, built with the WiX Toolset v5 dotnet tool (see make_msi.sh for the exact command line). -->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="Shaped Charge Lab" Manufacturer="Shaped Charge Lab" Version="$(Version)" Scope="perMachine"
+           UpgradeCode="58E0E51E-E6BA-4236-ABD4-E7B896AD0EE6">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Shaped Charge Lab is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/SmellingARose/shaped-charge-lab" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Shaped Charge Lab">
+        <Files Include="!(bindpath.deploy)\**" />
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="StartMenuShortcut">
+        <Shortcut Id="SclShortcut" Name="Shaped Charge Lab" Description="3D simulation of shaped-charge jets"
+                  Target="[INSTALLFOLDER]Shaped Charge Lab.exe" WorkingDirectory="INSTALLFOLDER" />
+        <RegistryValue Root="HKCU" Key="Software\ShapedChargeLab" Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+  </Package>
+</Wix>

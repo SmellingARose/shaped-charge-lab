@@ -1,4 +1,6 @@
-find_package(Qt6 6.7 REQUIRED COMPONENTS Core Gui GuiPrivate Qml Quick QuickControls2 ShaderTools)
+find_package(Qt6 6.7 REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2 ShaderTools)
+# QRhi headers: a separate GuiPrivate package from Qt 6.9, part of Qt6Gui before that
+find_package(Qt6 QUIET COMPONENTS GuiPrivate)
 qt_standard_project_setup(REQUIRES 6.7)
 
 qt_add_executable(ShapedChargeLab MACOSX_BUNDLE WIN32 src/main.cpp)
@@ -47,5 +49,29 @@ qt_add_shaders(ShapedChargeLab "scl_shaders"
 )
 
 target_include_directories(ShapedChargeLab PRIVATE src)
-target_link_libraries(ShapedChargeLab PRIVATE scl_core Qt6::Quick Qt6::QuickControls2 Qt6::GuiPrivate)  # QRhi headers
+target_link_libraries(ShapedChargeLab PRIVATE scl_core Qt6::Quick Qt6::QuickControls2 Qt6::GuiPrivate)  # GuiPrivate: QRhi headers
 target_compile_definitions(ShapedChargeLab PRIVATE SCL_VERSION="${PROJECT_VERSION}")
+
+# ---- self-contained deployment (used by packaging/ and CI)
+get_target_property(_qmake Qt6::qmake IMPORTED_LOCATION)
+get_filename_component(_qtbin ${_qmake} DIRECTORY)
+if(WIN32)
+  find_program(SCL_WINDEPLOYQT windeployqt HINTS ${_qtbin})
+  if(SCL_WINDEPLOYQT)
+    # deploy/ holds the exe, the Qt runtime and the MSVC runtime DLLs next to it (so no VC++ Redistributable is needed)
+    set(CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS_SKIP TRUE)
+    include(InstallRequiredSystemLibraries)
+    if(MSVC AND NOT CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS)
+      message(WARNING "MSVC runtime DLLs not found: the deploy folder will need the VC++ Redistributable installed")
+    endif()
+    set(_dep ${CMAKE_BINARY_DIR}/deploy)
+    add_custom_target(scl_deploy
+      COMMAND ${CMAKE_COMMAND} -E rm -rf ${_dep}
+      COMMAND ${CMAKE_COMMAND} -E make_directory ${_dep}
+      COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:ShapedChargeLab> $<TARGET_FILE:scl_smoke> ${CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS} ${_dep}/
+      COMMAND ${SCL_WINDEPLOYQT} --qmldir ${CMAKE_CURRENT_SOURCE_DIR}/qml --no-translations --no-compiler-runtime "${_dep}/$<TARGET_FILE_NAME:ShapedChargeLab>"
+      DEPENDS ShapedChargeLab scl_smoke VERBATIM)
+  endif()
+elseif(APPLE)
+  find_program(SCL_MACDEPLOYQT macdeployqt HINTS ${_qtbin})
+endif()

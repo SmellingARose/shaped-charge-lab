@@ -1,17 +1,43 @@
-# Shaped Charge Lab
+<div align="center">
 
-A native, GPU-accelerated 3D simulation of shaped-charge jets, for understanding how they form and why
-there is an optimal standoff distance between the charge and its target.
+<h1>Shaped Charge Lab</h1>
 
-An explosive drives a conical metal liner inward. It collapses on the axis into a fast, stretching jet
-and a slow slug. The jet stretches, breaks into particles, and penetrates the target. Every stage is computed by a
-full 3D SPH hydrocode (no symmetry assumed) and rendered in 3D.
+<p><b>Watch an explosive turn a copper cone into a hypersonic jet, in full 3D, and find the standoff that drills deepest.</b></p>
 
-![Shaped Charge Lab: a jet forming and stretching toward the target](docs/screens/app.jpg)
+<a href="https://github.com/SmellingARose/shaped-charge-lab/releases/latest/download/ShapedChargeLab-macOS.dmg"><img src="docs/download/macos.svg" alt="Download for macOS" height="56"></a>&nbsp;&nbsp;<a href="https://github.com/SmellingARose/shaped-charge-lab/releases/latest/download/ShapedChargeLab-Windows.msi"><img src="docs/download/windows.svg" alt="Download for Windows" height="56"></a>
 
-> Status: work in progress. The simulation runs on CPU, Apple Metal and AMD GPUs (HIP); NVIDIA (CUDA) is written but
-> untested. The app runs on macOS; Windows and Linux builds and installers are next. Penetration depth is not yet
-> converged with resolution; see [docs/convergence.md](docs/convergence.md).
+<sub>One download, nothing else to install · <a href="https://github.com/SmellingARose/shaped-charge-lab/releases">All releases</a></sub>
+
+<br>
+
+<img src="docs/screens/app.jpg" alt="Shaped Charge Lab: a jet forming and stretching toward the target" width="100%">
+
+</div>
+
+<details>
+<summary><b>First launch shows a warning?</b> That is expected; here is the one-time fix.</summary>
+<br>
+
+The app is not signed by a paid developer account, so the first time:
+
+- **Mac:** open the .dmg, drag **Shaped Charge Lab** to Applications and open it. When macOS says it cannot check the
+  app, open **System Settings → Privacy & Security**, scroll down, press **Open Anyway** and confirm. After that it
+  opens normally. Intel Macs are not supported.
+- **Windows:** run the .msi. If SmartScreen says "Windows protected your PC", press **More info**, then **Run anyway**.
+  Shaped Charge Lab is then in the Start menu.
+
+</details>
+
+## About
+
+A native, GPU-accelerated 3D simulation of shaped-charge jets, for understanding how they form and why there is an
+optimal standoff distance between the charge and its target. An explosive drives a conical metal liner inward; it
+collapses on the axis into a fast, stretching jet and a slow slug; the jet stretches, breaks into particles and
+penetrates the target. Every stage is computed by a full 3D SPH hydrocode (no symmetry assumed).
+
+> Status: early release. The simulation runs on Apple Metal, CPUs (any Mac or PC) and AMD GPUs (HIP, from source for
+> now; the Windows download is CPU-only until the GPU plug-in ships). NVIDIA (CUDA) is written but untested.
+> Penetration depth is not yet converged with resolution; see [docs/convergence.md](docs/convergence.md).
 
 ## The app
 
