@@ -20,10 +20,11 @@ machine and only the plug-in depends on the AMD/NVIDIA runtime.
 
 ### Developer setup (documented, can be scripted with an elevated "setup-dev.ps1")
 
-One elevated PowerShell on a Windows build machine with an AMD GPU:
+One elevated PowerShell on a Windows build machine with an AMD GPU (with VS 2022 Build Tools present; otherwise install
+them first with `winget install Microsoft.VisualStudio.2022.BuildTools`):
 
 ```powershell
-winget install --id Microsoft.VisualStudio.2022.BuildTools --accept-package-agreements --accept-source-agreements --override "--quiet --wait --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+Start-Process "C:\Program Files (x86)\Microsoft Visual Studio\Installer\setup.exe" -Wait -ArgumentList 'modify', '--installPath', '"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools"', '--add', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64', '--quiet', '--norestart'
 # HIP SDK matching the driver's HIP runtime (Adrenalin ships HIP 6 -> HIP SDK 6.4). From AMD's 25.Q3 package:
 Start-Process msiexec -Wait -ArgumentList '/i', '<extracted package>\Packages\Apps\ROCmSDKPackages\SDKCore\ROCm_SDK_Core.msi', '/qn', '/L*v', "$env:USERPROFILE\hip-sdk-install.log"
 ```

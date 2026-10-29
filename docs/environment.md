@@ -15,7 +15,8 @@ Everything installed for this project is logged here, so a machine can be rebuil
 Hardware: Intel Core i7-14700KF (28 threads), 32 GB RAM, AMD Radeon RX 6700 XT (RDNA2, gfx1031), Windows 11 Pro.
 
 Already present before this project: CMake (`C:\Program Files\CMake`), Git, Python 3.12, GitHub CLI,
-MinGW-w64 GCC 16.2 + Ninja (WinLibs via winget), Visual Studio Build Tools 18 with MSVC 14.51 and Windows SDK 10.0.26100.
+MinGW-w64 GCC 16.2 + Ninja (WinLibs via winget), Visual Studio Build Tools 18 with MSVC 14.51 and Windows SDK 10.0.26100,
+and Visual Studio 2022 Build Tools (17.14) without the C++ compiler.
 
 Done on this machine so far (2026-10-28):
 
@@ -33,10 +34,12 @@ Findings:
   AMD supports the VS 2022 toolset (MSVC v143).
 - The SSH account is not elevated, so installers that need admin must be run from an elevated prompt on the machine.
 
-Proper setup (one elevated PowerShell on `eric`). This keeps the gaming driver, whose HIP 6 runtime matches HIP SDK 6.4:
+Proper setup (one elevated PowerShell on `eric`). The first command adds only the MSVC v143 compiler and libraries to the
+existing VS 2022 Build Tools (the newest toolset HIP's clang supports). The second keeps the gaming driver, whose HIP 6
+runtime matches HIP SDK 6.4:
 
 ```powershell
-winget install --id Microsoft.VisualStudio.2022.BuildTools --accept-package-agreements --accept-source-agreements --override "--quiet --wait --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+Start-Process "C:\Program Files (x86)\Microsoft Visual Studio\Installer\setup.exe" -Wait -ArgumentList 'modify', '--installPath', '"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools"', '--add', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64', '--quiet', '--norestart'
 Start-Process msiexec -Wait -ArgumentList '/i', "$env:USERPROFILE\Downloads\hipsdk64\Packages\Apps\ROCmSDKPackages\SDKCore\ROCm_SDK_Core.msi", '/qn', '/L*v', "$env:USERPROFILE\hip-sdk-install.log"
 Remove-Item -Recurse -Force "$env:USERPROFILE\rocm", "$env:USERPROFILE\rocm64", "$env:USERPROFILE\Downloads\hipsdk", "$env:USERPROFILE\Downloads\AMD-Software-PRO-Edition-26.Q3-Win11-For-HIP.exe"
 ```
